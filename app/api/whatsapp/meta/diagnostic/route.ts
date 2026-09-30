@@ -33,12 +33,17 @@ export async function GET(req: NextRequest) {
   } else {
     try {
       const r = await query(
-        `SELECT id, user_id, business_name, sector, location, currency, website_url,
-                latitude, longitude, status,
+        // to_jsonb pour tout ce qui vient d'une migration : sur une base qui ne
+        // l'a pas, on veut NULL, pas la perte de toute la requête.
+        `SELECT a.id, a.user_id, a.business_name, a.sector, a.location, a.website_url,
+                a.latitude, a.longitude, a.status,
+                COALESCE(to_jsonb(a)->>'currency', 'XAF') AS currency,
                 to_jsonb(a)->>'business_hours' AS business_hours,
+                to_jsonb(a)->>'meta_phone_number_id' AS meta_phone_number_id,
+                to_jsonb(a)->>'transport' AS transport,
                 (to_jsonb(a)->>'delivery_fee')::numeric AS delivery_fee,
                 COALESCE((to_jsonb(a)->>'delivery_enabled')::boolean, true) AS delivery_enabled
-           FROM camille.agents a WHERE id = $1`,
+           FROM camille.agents a WHERE a.id = $1`,
         [agentId]
       );
       agent = (r.rows[0] as Agent) || null;
@@ -109,6 +114,11 @@ export async function GET(req: NextRequest) {
           business_hours: agent.business_hours,
           delivery_enabled: agent.delivery_enabled,
           delivery_fee: agent.delivery_fee,
+          // Renseignés seulement après migration_meta_transport.sql.
+          transport: (agent as unknown as { transport?: string }).transport ?? "(colonne absente)",
+          meta_phone_number_id:
+            (agent as unknown as { meta_phone_number_id?: string }).meta_phone_number_id ??
+            "(colonne absente — repli META_TEST_AGENT_ID)",
         }
       : { error: agentErr || "absent" },
     catalogue_meta: {

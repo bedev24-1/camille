@@ -74,18 +74,24 @@ export type Contexte = {
  * à la base que les clients utilisent.
  */
 async function trouverAgent(phoneNumberId: string): Promise<Agent | null> {
+  // Seules les colonnes garanties sont lues directement. Tout ce qui est arrivé
+  // par une migration passe par to_jsonb : sur une base qui ne l'a pas, on
+  // récupère NULL au lieu de perdre TOUTE la requête — donc l'agent, donc le
+  // message. `currency` n'existe pas sur camille.agents : la lire en direct
+  // faisait échouer la résolution de l'agent, et donc taire l'agent entier.
   const champs = `
-    id, user_id, business_name, sector, location, currency, website_url,
-    latitude, longitude,
-    to_jsonb(a)->>'business_hours'                            AS business_hours,
-    (to_jsonb(a)->>'delivery_fee')::numeric                   AS delivery_fee,
-    COALESCE((to_jsonb(a)->>'delivery_enabled')::boolean, true) AS delivery_enabled`;
+    a.id, a.user_id, a.business_name, a.sector, a.location, a.website_url,
+    a.latitude, a.longitude,
+    COALESCE(to_jsonb(a)->>'currency', 'XAF')                   AS currency,
+    to_jsonb(a)->>'business_hours'                              AS business_hours,
+    (to_jsonb(a)->>'delivery_fee')::numeric                     AS delivery_fee,
+    COALESCE((to_jsonb(a)->>'delivery_enabled')::boolean, true)  AS delivery_enabled`;
 
   // 1. Par le numéro Meta, quand la colonne est là.
   try {
     const r = await query(
       `SELECT ${champs} FROM camille.agents a
-        WHERE to_jsonb(a)->>'meta_phone_number_id' = $1 AND status = 'active' LIMIT 1`,
+        WHERE to_jsonb(a)->>'meta_phone_number_id' = $1 AND a.status = 'active' LIMIT 1`,
       [phoneNumberId]
     );
     if (r.rows.length) return r.rows[0] as Agent;
@@ -95,7 +101,7 @@ async function trouverAgent(phoneNumberId: string): Promise<Agent | null> {
   const test = process.env.META_TEST_AGENT_ID;
   if (!test) return null;
   try {
-    const r = await query(`SELECT ${champs} FROM camille.agents a WHERE id = $1 LIMIT 1`, [test]);
+    const r = await query(`SELECT ${champs} FROM camille.agents a WHERE a.id = $1 LIMIT 1`, [test]);
     return (r.rows[0] as Agent) || null;
   } catch {
     return null;
@@ -122,15 +128,52 @@ async function humainEnCours(agentId: string, phone: string): Promise<boolean> {
   }
 }
 
-/** La conversation, pour l'historique et les statistiques. */
+/** Le nom de session sous lequel cet agent parle via Meta. */
+export const sessionMeta = (agentId: string) => `meta:${agentId}`;
+
+/**
+ * La conversation, pour l'historique et les statistiques.
+ *
+ * `camille.agent_conversations` n'a PAS de colonne agent_id : tout est rattaché
+ * par `session_name`, que les statistiques joignent à
+ * `camille.whatsapp_sessions`. Écrire un agent_id ici faisait échouer
+ * l'insertion en silence — et l'historique de la conversation disparaissait.
+ */
 async function tracer(agentId: string, phone: string, role: string, content: string) {
   try {
     await query(
-      `INSERT INTO camille.agent_conversations (agent_id, session_name, contact_phone, role, content, created_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())`,
-      [agentId, `meta:${agentId}`, phone, role, content.slice(0, 4000)]
+      `INSERT INTO camille.agent_conversations (session_name, contact_phone, role, content, created_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [sessionMeta(agentId), phone, role, content.slice(0, 4000)]
     );
-  } catch { /* la trace ne doit jamais empêcher la réponse */ }
+  } catch (e) {
+    // La trace ne doit jamais empêcher la réponse — mais on dit pourquoi.
+    console.error("[meta] trace non enregistrée :", (e as Error).message);
+  }
+}
+
+/**
+ * Rattache le nom de session Meta à l'agent, une fois.
+ *
+ * Sans ce lien, les conversations sont « orphelines » : le tableau de bord et
+ * /api/stats les cherchent via whatsapp_sessions et ne les trouvent pas. Le
+ * diagnostic des statistiques signale déjà ce cas — autant ne pas le créer.
+ */
+async function lierSession(agentId: string) {
+  const nom = sessionMeta(agentId);
+  try {
+    const r = await query(
+      "SELECT 1 FROM camille.whatsapp_sessions WHERE session_name = $1 LIMIT 1",
+      [nom]
+    );
+    if (r.rows.length) return;
+    await query(
+      "INSERT INTO camille.whatsapp_sessions (agent_id, session_name) VALUES ($1, $2)",
+      [agentId, nom]
+    );
+  } catch (e) {
+    console.error("[meta] session non liée :", (e as Error).message);
+  }
 }
 
 // ── L'aiguillage ────────────────────────────────────────────────────────────
@@ -165,6 +208,10 @@ export async function handleIncoming(msg: IncomingMessage): Promise<void> {
   // Accusé de lecture et indicateur de frappe : le client voit qu'on s'occupe
   // de lui avant même la réponse.
   if (msg.messageId) meta.markReadTyping(msg.messageId).catch(() => {});
+
+  // Le rattachement de la session, pour que les statistiques voient ces
+  // conversations. Idempotent, et sans effet sur les sessions camille-core.
+  await lierSession(agent.id);
 
   await tracer(agent.id, phone, "user", msg.text || `(${msg.rawType || msg.type})`);
 

@@ -19,7 +19,7 @@ import { query } from "@/lib/db";
 import { sectorProfile } from "@/lib/sectorProfiles";
 import { createOrder } from "@/lib/orders";
 import * as meta from "./meta";
-import { tracer, type Contexte } from "./handle";
+import { tracer, sessionMeta, type Contexte } from "./handle";
 
 // ── Identifiants de nos propres boutons ─────────────────────────────────────
 // Préfixés pour ne jamais être confondus avec un identifiant de catalogue.
@@ -206,7 +206,7 @@ async function recevoirPanier(ctx: Contexte) {
     customerName: msg.contactName || "",
     note: msg.order?.note || "",
     source: "whatsapp",
-    session: `meta:${agent.id}`,
+    session: sessionMeta(agent.id),
   });
 
   if ("ok" in res && res.ok === false) {
