@@ -21,15 +21,28 @@ export async function POST(req: NextRequest) {
       agentId = r.rows[0]?.agent_id ?? null;
     }
 
-    await query(
-      `INSERT INTO camille.conversation_traces
-        (agent_id, session_name, contact_phone, user_msg,
-         search_q, search_off, search_kind,
-         llm_intent, final_intent, corrected,
-         resolved_product, reply_mode, items, cart_size, tokens, latency_ms,
-         raisonnement, certitude, ambigu)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
-      [
+    const COLONNES = [
+      "agent_id", "session_name", "contact_phone", "user_msg",
+      "search_q", "search_off", "search_kind",
+      "llm_intent", "final_intent", "corrected",
+      "resolved_product", "reply_mode", "items", "cart_size", "tokens", "latency_ms",
+      "raisonnement", "certitude", "ambigu",
+      // `raccourci` arrive par migration_traces_reflexion.sql. Le workflow
+      // l'envoie depuis le nœud « Faut-il le modèle ? » ; il n'était stocké
+      // nulle part, et c'est lui qui dit si un tour sans token est un raccourci
+      // réussi ou un 429 subi. Sur une base non migrée, l'insertion est rejouée
+      // sans lui plutôt que de faire perdre toute la trace.
+      "raccourci",
+    ];
+
+    const inserer = (cols: string[], vals: unknown[]) =>
+      query(
+        `INSERT INTO camille.conversation_traces (${cols.join(", ")})
+         VALUES (${cols.map((_, i) => `$${i + 1}`).join(",")})`,
+        vals
+      );
+
+    const valeurs: unknown[] = [
         agentId,
         b.session ?? null,
         b.phone ?? null,
@@ -56,8 +69,17 @@ export async function POST(req: NextRequest) {
         (b.analyse ?? "").slice(0, 300) || null,
         b.certitude != null && isFinite(Number(b.certitude)) ? Number(b.certitude) : null,
         b.ambigu === true || b.ambigu === "true",
-      ]
-    );
+        (String(b.raccourci ?? "") || null)?.slice(0, 120) || null,
+      ];
+
+    try {
+      await inserer(COLONNES, valeurs);
+    } catch (e) {
+      // 42703 = colonne inexistante : la base n'a pas encore la migration.
+      // On réinsère sans `raccourci` — une trace amputée vaut mieux qu'aucune.
+      if ((e as { code?: string }).code !== "42703") throw e;
+      await inserer(COLONNES.slice(0, -1), valeurs.slice(0, -1));
+    }
 
     return NextResponse.json({ ok: true });
   } catch (err) {

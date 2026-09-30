@@ -22,7 +22,13 @@
 ALTER TABLE camille.conversation_traces
   ADD COLUMN IF NOT EXISTS raisonnement TEXT,     -- « ce que le client demande vraiment », par le LLM
   ADD COLUMN IF NOT EXISTS certitude    INT,      -- 0-100, auto-évaluée
-  ADD COLUMN IF NOT EXISTS ambigu       BOOLEAN DEFAULT FALSE;
+  ADD COLUMN IF NOT EXISTS ambigu       BOOLEAN DEFAULT FALSE,
+  -- Le workflow calcule et ENVOIE déjà ce champ ; il n'était stocké nulle part.
+  -- Sans lui, `tokens = 0` confond deux faits opposés : le raccourci a marché
+  -- et aucun appel n'était nécessaire (c'est la marge), ou le modèle a répondu
+  -- 429 (c'est la panne). Avec une clé en limite de débit permanente, ce sont
+  -- justement les deux à séparer.
+  ADD COLUMN IF NOT EXISTS raccourci    TEXT;
 
 -- Les tours où l'agent a préféré demander plutôt que supposer. C'est la mesure
 -- de la couche 3 : trop peu, elle ne sert à rien ; trop, elle fatigue le client.
