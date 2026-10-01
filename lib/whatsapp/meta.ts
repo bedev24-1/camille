@@ -348,6 +348,113 @@ export function sendTemplate(
   });
 }
 
+// ── Modèles de message (templates) ──────────────────────────────────────────
+//
+// Hors de la fenêtre de 24 h, seul un modèle approuvé passe. Chaque marchand a
+// donc besoin des SIENS, approuvés sous SA propre WABA : accusé de commande,
+// suivi de livraison, prise en charge d'une réclamation. Sans cet écran, c'est
+// le commerçant qui doit aller les créer dans les outils de Meta — ou nous qui
+// les créons à la main pour chacun.
+
+const WABA = process.env.WABA_ID || "";
+
+export type Template = {
+  id?: string;
+  name: string;
+  status?: string;
+  category?: string;
+  language?: string;
+  components?: unknown[];
+};
+
+/** Les modèles du compte, avec leur statut d'approbation. */
+export async function listTemplates(wabaId = WABA): Promise<{
+  ok: boolean; templates: Template[]; error?: string;
+}> {
+  if (!TOKEN || !wabaId) return { ok: false, templates: [], error: "WHATSAPP_TOKEN ou WABA_ID absent" };
+  try {
+    const res = await fetch(
+      `https://graph.facebook.com/${GRAPH}/${wabaId}/message_templates` +
+        `?fields=id,name,status,category,language,components&limit=100`,
+      { headers: { Authorization: `Bearer ${TOKEN}` } }
+    );
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = (j.error || {}) as { message?: string };
+      return { ok: false, templates: [], error: err.message || `HTTP ${res.status}` };
+    }
+    return { ok: true, templates: (j.data || []) as Template[] };
+  } catch (e) {
+    return { ok: false, templates: [], error: (e as Error).message };
+  }
+}
+
+/**
+ * Soumet un modèle à l'approbation de Meta.
+ *
+ * `example` est obligatoire dès qu'il y a des variables `{{1}}` : Meta refuse
+ * un modèle dont il ne peut pas juger le rendu réel. On le construit donc à
+ * partir des exemples saisis, plutôt que de laisser le commerçant découvrir le
+ * refus trois jours plus tard.
+ */
+export async function createTemplate(
+  input: {
+    name: string;
+    category: "UTILITY" | "MARKETING" | "AUTHENTICATION";
+    language?: string;
+    body: string;
+    examples?: string[];
+    footer?: string;
+  },
+  wabaId = WABA
+): Promise<{ ok: boolean; id?: string; status?: string; error?: string }> {
+  if (!TOKEN || !wabaId) return { ok: false, error: "WHATSAPP_TOKEN ou WABA_ID absent" };
+
+  // Meta impose : minuscules, chiffres et tirets bas uniquement.
+  const name = input.name.toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 512);
+  const variables = (input.body.match(/\{\{\s*\d+\s*\}\}/g) || []).length;
+
+  const components: Record<string, unknown>[] = [
+    {
+      type: "BODY",
+      text: input.body,
+      ...(variables
+        ? {
+            example: {
+              body_text: [
+                Array.from({ length: variables }, (_, i) => input.examples?.[i] || `exemple${i + 1}`),
+              ],
+            },
+          }
+        : {}),
+    },
+  ];
+  if (input.footer?.trim()) components.push({ type: "FOOTER", text: input.footer.trim().slice(0, 60) });
+
+  try {
+    const res = await fetch(`https://graph.facebook.com/${GRAPH}/${wabaId}/message_templates`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name, language: input.language || "fr", category: input.category, components }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = (j.error || {}) as {
+        message?: string; error_user_msg?: string; error_data?: { details?: string };
+      };
+      // `error_user_msg` porte souvent la vraie raison, lisible : « un modèle
+      // de ce nom existe déjà », « la catégorie ne correspond pas au contenu ».
+      return {
+        ok: false,
+        error: [err.error_user_msg, err.error_data?.details, err.message].filter(Boolean).join(" — "),
+      };
+    }
+    return { ok: true, id: j.id, status: j.status };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
 // ── Lecture du catalogue Meta ───────────────────────────────────────────────
 
 export type MetaCatalogItem = {

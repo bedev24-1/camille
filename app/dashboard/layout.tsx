@@ -6,7 +6,7 @@ import { useEffect, useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Bot, Plus, LogOut, ChevronLeft, ChevronDown, Users, Wallet, Globe,
-  Search, Bell, HelpCircle, Command, LayoutDashboard, ExternalLink, CreditCard, BarChart2, Menu, Package, Settings, Plug, Receipt, ShieldCheck, Activity, ImageIcon, TrendingUp, Building2, Bike, Route } from "lucide-react";
+  Search, Bell, HelpCircle, Command, LayoutDashboard, ExternalLink, CreditCard, BarChart2, Menu, Package, Settings, Plug, Receipt, ShieldCheck, Activity, ImageIcon, TrendingUp, Building2, Bike, Route, MessageSquare } from "lucide-react";
 import { authHeaders }  from "@/lib/auth-client";
 import { useAuth }      from "@/hooks/useAuth";
 import { useAgents }    from "@/hooks/useAgents";
@@ -175,6 +175,9 @@ function Sidebar({ collapsedProp, onToggle, isDesktop, mobileOpen, onCloseMobile
           collapsed={collapsed}
           items={[
             { href: "/dashboard/orders", label: "Commandes", icon: <Receipt className="w-3.5 h-3.5" />, active: pathname === "/dashboard/orders" },
+            // Les modèles approuvés par WhatsApp : le seul moyen d'écrire au
+            // client passé 24 h sans nouvelle de lui.
+            { href: "/dashboard/templates", label: "Modèles de message", icon: <MessageSquare className="w-3.5 h-3.5" />, active: pathname === "/dashboard/templates" },
             ...(activeAgentId
               ? [{ href: `/dashboard/${activeAgentId}/suivi`, label: "Suivi des livraisons", icon: <Route className="w-3.5 h-3.5" />, active: pathname.endsWith("/suivi") }]
               : []),
