@@ -139,24 +139,67 @@ function chercher(prods: Produit[], demande: string): Produit[] {
 
 // ── Les envois ──────────────────────────────────────────────────────────────
 
-/** La vitrine : une liste de produits natifs, avec panier intégré. */
+/**
+ * Montrer des produits — un format par situation.
+ *
+ * Les quatre formats natifs ont été éprouvés en production sur le numéro
+ * Buyticle, et ils ne se valent pas :
+ *
+ *   1 produit        → `product`   une fiche, photo + prix du catalogue
+ *   2 à 10 produits  → `carousel`  les fiches défilent horizontalement — le
+ *                                  format le plus vendeur, celui qui remplace
+ *                                  vraiment les albums bricolés
+ *   plus de 10       → `product_list` une liste par catégories
+ *   rien de précis   → `catalog_message` un bouton vers tout le catalogue
+ *
+ * Le carrousel interdit en-tête, pied de page et boutons : c'est la fiche qui
+ * porte le prix et le bouton « ajouter au panier ». Le texte passe donc dans
+ * le corps, et c'est le seul endroit où l'on parle.
+ */
 async function montrerVitrine(ctx: Contexte, prods: Produit[], entete: string, corps: string) {
   const { phone } = ctx;
+
   if (!prods.length) {
     await meta.sendText(phone, "Je n'ai rien à te montrer pour le moment 😔 Réécris-moi un peu plus tard.");
     return;
   }
+
+  // ── Une seule fiche ──────────────────────────────────────────────────────
   if (prods.length === 1) {
     const p = prods[0];
     const prix = p.price != null ? ` — ${money(p.price, p.currency)}` : "";
-    const r = await meta.sendProduct(phone, p.retailerId, `${p.name}${prix}\n\nTu peux l'ajouter à ton panier ici 👇`);
-    if (!r.ok) console.error("[boutique] fiche produit refusée :", r.error);
+    const texte = (corps || `${p.name}${prix}`) + "\n\nTu peux l'ajouter à ton panier ici 👇";
+    const r = await meta.sendProduct(phone, p.retailerId, texte);
+    if (!r.ok) {
+      console.error("[boutique] fiche produit refusée :", r.error);
+      // Le produit est injoignable (fiche fantôme) : on ne laisse pas le
+      // client sans réponse, on lui ouvre le catalogue.
+      await meta.sendCatalog(phone, "Je n'arrive pas à afficher cet article — voici tout notre catalogue 👇");
+    }
     await tracer(ctx.agent.id, phone, "assistant", `[fiche] ${p.name}`);
     return;
   }
 
-  // Meta groupe par sections : on suit les catégories quand elles existent,
-  // sinon une seule section suffit.
+  // ── De 2 à 10 : le carrousel ─────────────────────────────────────────────
+  if (prods.length <= 10) {
+    const r = await meta.sendCarouselRobuste(
+      phone,
+      (corps || "Voici ce qu'on a pour toi") +
+        "\n\nFais défiler 👉 touche une fiche pour l'ajouter à ton panier, puis envoie-moi le panier.",
+      prods.map((p) => p.retailerId)
+    );
+    if (r.rejetes?.length) {
+      console.warn("[boutique] fiches retirées de la vitrine :", r.rejetes.join(", "));
+    }
+    if (!r.ok) {
+      console.error("[boutique] carrousel refusé :", r.error);
+      await meta.sendCatalog(phone, corps || "Voici notre catalogue 👇");
+    }
+    await tracer(ctx.agent.id, phone, "assistant", `[carrousel] ${prods.length} articles`);
+    return;
+  }
+
+  // ── Au-delà de 10 : la liste par catégories ──────────────────────────────
   const parCat = new Map<string, string[]>();
   for (const p of prods.slice(0, 30)) {
     const k = p.category || "Nos articles";
@@ -165,13 +208,15 @@ async function montrerVitrine(ctx: Contexte, prods: Produit[], entete: string, c
   }
   const sections = [...parCat.entries()].map(([title, retailerIds]) => ({ title, retailerIds }));
 
-  const r = await meta.sendProductList(phone, entete, corps, sections, "Ajoute au panier et envoie-le 🛒");
+  const r = await meta.sendProductList(
+    phone, entete || "Notre boutique", corps || "Voici tout ce qu'on propose",
+    sections, "Ajoute au panier et envoie-le 🛒"
+  );
   if (!r.ok) {
     console.error("[boutique] vitrine refusée :", r.error);
-    // Repli : le message catalogue entier, qui ne dépend d'aucun retailer_id.
-    await meta.sendCatalog(phone, corps);
+    await meta.sendCatalog(phone, corps || "Voici notre catalogue 👇");
   }
-  await tracer(ctx.agent.id, phone, "assistant", `[vitrine] ${prods.length} articles`);
+  await tracer(ctx.agent.id, phone, "assistant", `[liste] ${prods.length} articles`);
 }
 
 /** Le panier natif reçu : on enregistre la commande, puis on demande où livrer. */

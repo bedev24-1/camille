@@ -223,6 +223,83 @@ export function sendProductList(
   });
 }
 
+/**
+ * Le carrousel : des fiches produit qui défilent horizontalement.
+ *
+ * C'est le format le plus vendeur, et celui qui remplace vraiment nos albums :
+ * chaque carte porte la photo, le nom et le prix tenus par le catalogue, et le
+ * client ajoute au panier sans écrire une phrase.
+ *
+ * Trois contraintes imposées par Meta, apprises en les heurtant :
+ *   - de 2 à 10 cartes (une seule carte est refusée → on envoie une fiche) ;
+ *   - ni en-tête, ni pied de page, ni boutons ;
+ *   - toutes les cartes dans le MÊME catalogue, et chaque `retailer_id` est
+ *     vérifié côté serveur. Un identifiant qui figure dans le catalogue en
+ *     lecture mais n'y est pas réellement rattaché fait rejeter TOUT le
+ *     message — pas seulement sa carte.
+ */
+export function sendCarousel(
+  to: string, body: string, retailerIds: string[], catalogId = CATALOG_ID
+): Promise<MetaResult> {
+  const ids = retailerIds.slice(0, 10);
+  if (ids.length < 2) {
+    return ids.length === 1
+      ? sendProduct(to, ids[0], body, catalogId)
+      : Promise.resolve({ ok: false, error: "carrousel : aucune fiche à montrer" });
+  }
+  return send(to, {
+    type: "interactive",
+    interactive: {
+      type: "carousel",
+      body: { text: body.slice(0, 1024) },
+      action: {
+        cards: ids.map((rid, i) => ({
+          card_index: i,
+          type: "product",
+          action: { product_retailer_id: rid, catalog_id: catalogId },
+        })),
+      },
+    },
+  });
+}
+
+/**
+ * Le carrousel, qui se répare lui-même.
+ *
+ * Le catalogue de production contenait trois produits « importés » que l'API de
+ * lecture donnait pour `in stock` et `published`, et que WhatsApp refusait à
+ * l'envoi : « product not found for product_retailer_id … in catalog_id … ».
+ *
+ * Aucun contrôle préalable ne les distingue — c'est justement l'API de lecture
+ * qui les renvoie. La seule chose qui les révèle est l'échec, et Meta a la
+ * courtoisie de NOMMER le coupable dans `error_data.details`. On s'en sert :
+ * on retire la fiche incriminée et on réessaie, au lieu de laisser le client
+ * sans rien parce qu'un produit sur cinq est fantôme.
+ */
+export async function sendCarouselRobuste(
+  to: string, body: string, retailerIds: string[], catalogId = CATALOG_ID
+): Promise<MetaResult & { rejetes?: string[] }> {
+  let ids = retailerIds.slice(0, 10);
+  const rejetes: string[] = [];
+
+  // Au pire un tour par fiche ; en pratique un ou deux.
+  for (let essai = 0; essai < ids.length + 1; essai++) {
+    const r = await sendCarousel(to, body, ids, catalogId);
+    if (r.ok) return rejetes.length ? { ...r, rejetes } : r;
+
+    // On ne retente que sur « produit introuvable », et seulement si Meta
+    // nomme lequel. Toute autre erreur est rendue telle quelle.
+    const coupable = ids.find((id) => r.error?.includes(id));
+    if (!coupable) return rejetes.length ? { ...r, rejetes } : r;
+
+    console.warn(`[meta] fiche produit injoignable, retirée de la vitrine : ${coupable}`);
+    rejetes.push(coupable);
+    ids = ids.filter((id) => id !== coupable);
+    if (!ids.length) return { ok: false, error: "aucune fiche envoyable", rejetes };
+  }
+  return { ok: false, error: "aucune fiche envoyable", rejetes };
+}
+
 /** La vitrine entière, telle que le catalogue la tient. */
 export function sendCatalog(to: string, body: string, footer?: string): Promise<MetaResult> {
   return send(to, {
