@@ -14,6 +14,8 @@
 //   WHATSAPP_VERIFY_TOKEN · WHATSAPP_APP_SECRET
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { articlesPour, type AxeVariante } from "./variantes";
+
 const GRAPH = (process.env.GRAPH_VERSION || "v26.0").replace(/^\/?/, "");
 const TOKEN = process.env.WHATSAPP_TOKEN || "";
 const PHONE_ID = process.env.PHONE_NUMBER_ID || "";
@@ -618,6 +620,18 @@ export type MetaCatalogItem = {
   image_url?: string;
   description?: string;
   /**
+   * Les champs de VARIATION. Meta décline un produit en plusieurs articles
+   * reliés par `item_group_id` — quatre couleurs, quatre articles. Sans les
+   * lire, un import créerait quatre produits Camille distincts, et le
+   * catalogue du marchand doublerait à chaque synchronisation.
+   */
+  item_group_id?: string | null;
+  color?: string | null;
+  size?: string | null;
+  pattern?: string | null;
+  material?: string | null;
+  custom_label_0?: string | null;
+  /**
    * Ce produit peut-il être envoyé dans un message WhatsApp ?
    *
    * Découverte coûteuse : un produit peut figurer au catalogue en `in stock` et
@@ -648,7 +662,8 @@ export async function listCatalog(catalogId = CATALOG_ID, limit = 50): Promise<{
   if (!TOKEN || !catalogId) return { ok: false, items: [], error: "WHATSAPP_TOKEN ou CATALOG_ID absent" };
   try {
     const fields =
-      "retailer_id,name,price,availability,image_url,description,capability_to_review_status";
+      "retailer_id,name,price,availability,image_url,description,capability_to_review_status," +
+      "product_group{id},color,size,pattern,material,custom_label_0";
     const res = await fetch(
       `https://graph.facebook.com/${GRAPH}/${catalogId}/products?fields=${fields}&limit=${limit}`,
       { headers: { Authorization: `Bearer ${TOKEN}` } }
@@ -660,9 +675,18 @@ export async function listCatalog(catalogId = CATALOG_ID, limit = 50): Promise<{
     }
     const items = ((json.data || []) as (MetaCatalogItem & {
       capability_to_review_status?: { key: string; value: string }[];
+      product_group?: { id?: string } | null;
     })[]).map((it) => {
       const wa = (it.capability_to_review_status || []).find((c) => c.key === "WHATSAPP");
-      return { ...it, wa_status: wa?.value, sendable: wa?.value === "APPROVED" };
+      return {
+        ...it,
+        // Meta renvoie le groupe sous `product_group{id}` en lecture, alors
+        // qu'il s'écrit `item_group_id` en écriture. On normalise ici : le
+        // reste du code ne doit pas connaître cette asymétrie.
+        item_group_id: it.product_group?.id || it.item_group_id || null,
+        wa_status: wa?.value,
+        sendable: wa?.value === "APPROVED",
+      };
     });
     return { ok: true, items };
   } catch (e) {
@@ -683,6 +707,8 @@ export type ProduitASyncer = {
   stock?: number | null;
   category?: string | null;
   active?: boolean;
+  /** Les axes de variation de Camille, tels quels. */
+  variants?: AxeVariante[] | null;
 };
 
 /**
@@ -700,6 +726,30 @@ export type ProduitASyncer = {
  * supprimer bloquerait son identifiant chez Meta, comme pour les modèles de
  * message.
  */
+/**
+ * Les champs communs à toutes les variations d'un produit.
+ *
+ * Isolés pour qu'une variation et un produit simple ne puissent PAS diverger :
+ * si le prix ou la description était recopié à deux endroits, une correction
+ * sur l'un oublierait l'autre, et le marchand aurait deux prix pour le même
+ * article selon la couleur choisie.
+ */
+function resteDuProduit(
+  p: ProduitASyncer, options: { lien?: string; marque?: string }
+): Record<string, unknown> {
+  return {
+    description: String(p.description || p.name).slice(0, 9999),
+    // Meta attend le prix et la devise dans la même chaîne.
+    price: `${Math.round(Number(p.price))} ${p.currency || "XAF"}`,
+    availability: p.active === false || (p.stock != null && p.stock <= 0) ? "out of stock" : "in stock",
+    condition: "new",
+    link: options.lien || "https://camille.vps.buyticle.com",
+    ...(options.marque ? { brand: options.marque } : {}),
+    ...(p.category ? { product_type: p.category } : {}),
+    ...(p.stock != null ? { inventory: Math.max(0, Number(p.stock)) } : {}),
+  };
+}
+
 export async function syncCatalogue(
   produits: ProduitASyncer[],
   options: { catalogId?: string; lien?: string; marque?: string } = {}
@@ -720,23 +770,36 @@ export async function syncCatalogue(
   });
   if (!valides.length) return { ok: true, envoyes: 0, avertissements };
 
-  const requests = valides.map((p) => ({
-    method: "UPDATE",
-    data: {
-      id: p.id,
-      title: String(p.name).slice(0, 200),
-      description: String(p.description || p.name).slice(0, 9999),
-      // Meta attend le prix et la devise dans la même chaîne.
-      price: `${Math.round(Number(p.price))} ${p.currency || "XAF"}`,
-      availability: p.active === false || (p.stock != null && p.stock <= 0) ? "out of stock" : "in stock",
-      condition: "new",
-      image_link: p.image_url,
-      link: options.lien || "https://camille.vps.buyticle.com",
-      ...(options.marque ? { brand: options.marque } : {}),
-      ...(p.category ? { product_type: p.category } : {}),
-      ...(p.stock != null ? { inventory: Math.max(0, Number(p.stock)) } : {}),
-    },
-  }));
+  // Les axes multiples ne sont PAS multipliés entre eux : le marchand doit
+  // savoir pourquoi, et quoi faire. Voir lib/whatsapp/variantes.ts.
+  for (const p of valides) {
+    const { avertissements: a } = articlesPour(
+      { id: p.id, name: p.name, image_url: p.image_url || null }, p.variants
+    );
+    avertissements.push(...a);
+  }
+
+  const requests = valides.flatMap((p) => {
+    // Un produit à variations devient PLUSIEURS articles, reliés par
+    // item_group_id : c'est ce qui donne au client un sélecteur de couleur au
+    // lieu de quatre fiches séparées.
+    const { articles } = articlesPour(
+      { id: p.id, name: p.name, image_url: p.image_url || null },
+      p.variants
+    );
+    return articles.map((a) => ({
+      method: "UPDATE",
+      data: {
+        id: a.retailerId,
+        title: a.titre,
+        ...(a.itemGroupId ? { item_group_id: a.itemGroupId } : {}),
+        ...(a.champ && a.valeur ? { [a.champ]: a.valeur } : {}),
+        image_link: a.image || p.image_url,
+        ...resteDuProduit(p, options),
+      },
+    }));
+  });
+
 
   try {
     const res = await fetch(`https://graph.facebook.com/${GRAPH}/${catalogId}/items_batch`, {
@@ -760,7 +823,9 @@ export async function syncCatalogue(
     }[]) {
       for (const e of v.errors || []) avertissements.push(`${v.retailer_id} : ${e.message}`);
     }
-    return { ok: true, envoyes: valides.length, avertissements };
+    // `requests.length`, pas `valides.length` : un produit à variations compte
+    // pour autant d'articles qu'il a de déclinaisons.
+    return { ok: true, envoyes: requests.length, avertissements };
   } catch (e) {
     return { ok: false, envoyes: 0, avertissements, error: (e as Error).message };
   }

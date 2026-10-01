@@ -32,6 +32,7 @@ import { query } from "@/lib/db";
 import * as meta from "./meta";
 import { lirePrix } from "./prix";
 import { decider } from "./appariement";
+import { grouperVariantes, produitParent, type AxeVariante } from "./variantes";
 
 export type Rapport = {
   ok: boolean;
@@ -41,6 +42,8 @@ export type Rapport = {
   importes: number;
   /** Articles qui existaient des deux côtés et qu'on vient de relier. */
   relies: number;
+  /** Variations traduites, dans un sens ou dans l'autre. */
+  variations: number;
   /** Ce qui n'a pas pu partir, avec la raison, article par article. */
   avertissements: string[];
   error?: string;
@@ -57,6 +60,8 @@ type Ligne = {
   category: string | null;
   active: boolean;
   meta_retailer_id: string | null;
+  /** Les axes de variation, tels que Camille les déclare. */
+  variants: AxeVariante[] | null;
 };
 
 /** La colonne de liaison est-elle là ? Tout le sens Meta → Camille en dépend. */
@@ -75,6 +80,7 @@ async function produitsCamille(agentId: string): Promise<Ligne[]> {
   const r = await query(
     `SELECT id, name, description, price, COALESCE(currency,'XAF') AS currency,
             image_url, stock, category, COALESCE(active, true) AS active,
+            COALESCE(variants, '[]'::jsonb) AS variants,
             to_jsonb(p)->>'meta_retailer_id' AS meta_retailer_id
        FROM camille.products p
       WHERE agent_id = $1
@@ -93,6 +99,9 @@ async function produitsCamille(agentId: string): Promise<Ligne[]> {
     category: (x.category as string) || null,
     active: x.active !== false,
     meta_retailer_id: (x.meta_retailer_id as string) || null,
+    // La colonne est un JSONB : sur une base ancienne elle peut contenir
+    // autre chose qu'un tableau, et la traduction doit l'ignorer sans broncher.
+    variants: Array.isArray(x.variants) ? (x.variants as AxeVariante[]) : null,
   }));
 }
 
@@ -102,7 +111,7 @@ export async function reconcilier(
   agentId: string,
   options: { lien?: string; marque?: string } = {}
 ): Promise<Rapport> {
-  const rapport: Rapport = { ok: true, pousses: 0, importes: 0, relies: 0, avertissements: [] };
+  const rapport: Rapport = { ok: true, pousses: 0, importes: 0, relies: 0, variations: 0, avertissements: [] };
 
   const [camille, chezMeta, liaison] = await Promise.all([
     produitsCamille(agentId).catch((e) => {
@@ -157,49 +166,76 @@ export async function reconcilier(
     return rapport;
   }
 
-  for (const d of decider(camille, chezMeta.items)) {
-    if (d.faire === "rien") continue;
-    const it = chezMeta.items.find((x) => x.retailer_id === d.retailerId)!;
-    const rid = d.retailerId;
+  // Les variations d'un même produit sont REGROUPÉES avant toute décision.
+  // Sans ça, un article décliné en quatre couleurs créerait quatre produits
+  // Camille : le catalogue du marchand doublerait à chaque synchronisation et
+  // il ne saurait plus lequel modifier.
+  const groupes = grouperVariantes(chezMeta.items);
 
-    // 3. Même nom des deux côtés : on RELIE. Créer ici ferait un doublon, et
-    //    c'est le cas le plus fréquent d'un catalogue alimenté des deux bords.
+  // Un article Camille déjà relié à N'IMPORTE QUELLE variation du groupe
+  // signifie que le produit est connu : on ne le réimporte pas.
+  const liesConnus = new Set(camille.map((p) => p.meta_retailer_id).filter(Boolean) as string[]);
+  const idsCamille = new Set(camille.map((p) => p.id));
+
+  for (const g of groupes) {
+    const dejaConnu = g.membres.some(
+      (m) => liesConnus.has(m) || idsCamille.has(produitParent(m))
+    );
+    if (dejaConnu) continue;
+
+    // L'appariement travaille sur le représentant du groupe, pas sur chaque
+    // variation : c'est UN produit qu'on relie ou qu'on crée.
+    const [d] = decider(camille, [g.principal]);
+    if (!d || d.faire === "rien") continue;
+    const it = chezMeta.items.find((x) => x.retailer_id === g.principal.retailer_id)!;
+    const rid = g.principal.retailer_id;
+
+    // Même nom des deux côtés : on RELIE. Créer ici ferait un doublon, et
+    // c'est le cas le plus fréquent d'un catalogue alimenté des deux bords.
     if (d.faire === "relier") {
       try {
         await query(
-          `UPDATE camille.products SET meta_retailer_id = $1, updated_at = NOW()
+          `UPDATE camille.products
+              SET meta_retailer_id = $1,
+                  variants = CASE WHEN $4::jsonb = '[]'::jsonb
+                                  THEN COALESCE(variants, '[]'::jsonb) ELSE $4::jsonb END,
+                  updated_at = NOW()
             WHERE id = $2 AND agent_id = $3`,
-          [rid, d.camilleId, agentId]
+          [rid, d.camilleId, agentId, JSON.stringify(g.axes)]
         );
         rapport.relies++;
+        if (g.axes.length) rapport.variations += g.membres.length;
       } catch (e) {
         rapport.avertissements.push(`${it.name} : lien impossible — ${(e as Error).message}`);
       }
       continue;
     }
 
-    // 4. Inconnu : on l'importe. Meta ne tient pas de quantité, seulement
-    //    « en stock » ou « épuisé » — le stock reste donc NULL (inconnu), ce
-    //    qui vaut mieux que d'inventer un nombre que le commerçant croirait.
+    // Inconnu : on l'importe, avec ses variations reconstruites. Meta ne tient
+    // pas de quantité, seulement « en stock » ou « épuisé » — le stock reste
+    // donc NULL (inconnu), ce qui vaut mieux qu'un nombre inventé que le
+    // commerçant croirait.
     try {
       await query(
         `INSERT INTO camille.products
            (agent_id, name, description, price, currency, image_url, category,
-            active, stock, meta_retailer_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,$9)`,
+            active, stock, variants, meta_retailer_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,$9::jsonb,$10)`,
         [
           agentId,
-          String(it.name || "Sans nom").slice(0, 200),
+          String(g.principal.name || it.name || "Sans nom").slice(0, 200),
           String(it.description || "").slice(0, 4000),
           lirePrix(it.price),
           "XAF",
           it.image_url || null,
           null,
           it.availability !== "out of stock",
+          JSON.stringify(g.axes),
           rid,
         ]
       );
       rapport.importes++;
+      if (g.axes.length) rapport.variations += g.membres.length;
     } catch (e) {
       rapport.avertissements.push(`${it.name} : import impossible — ${(e as Error).message}`);
     }

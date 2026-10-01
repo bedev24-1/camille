@@ -60,6 +60,7 @@ import { tracer, sessionMeta, type Contexte } from "./handle";
 import { sansAccent, chercher, veutToutVoir, estUneQuestion } from "./recherche";
 import { lirePrix } from "./prix";
 import { formatVitrine, formatNaturel, noterEnvoi } from "./repetition";
+import { produitParent } from "./variantes";
 import {
   resumeMemoire, fusionnerNotes, faitsDesAchats, MAX_NOTES,
   type Souvenir,
@@ -436,7 +437,13 @@ async function recevoirPanier(ctx: Contexte) {
   const parRetailer = new Map(prods.map((p) => [p.retailerId, p]));
 
   const lignes = items.map((it) => {
-    const p = parRetailer.get(it.retailerId);
+    // Une commande de VARIATION porte « <produit>:<option> ». C'est le PARENT
+    // qui tient le stock : sans ce repli, une commande de variation ne
+    // décompterait rien — le défaut d'origine, rouvert par une autre porte.
+    const p =
+      parRetailer.get(it.retailerId) ||
+      parRetailer.get(produitParent(it.retailerId)) ||
+      prods.find((x) => x.id === produitParent(it.retailerId));
     return {
       // Quand le produit vient de Camille, on passe son vrai identifiant :
       // c'est lui qui permet de décompter le stock.

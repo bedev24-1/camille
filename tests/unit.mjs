@@ -497,6 +497,92 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   eq("une fiche répétée reste une fiche", formatVitrine("c|1", ["p1"], t + 1000), "fiche");
 }
 
+// ═══ variantes — Camille déclare des axes, Meta veut des articles ══════════
+{
+  const { articlesPour, grouperVariantes, produitParent, idVariante, champMeta, slug } =
+    await import(`${DIST}/whatsapp/variantes.js`);
+  groupe("variantes — ne jamais inventer de combinaison");
+
+  const P = { id: "abc", name: "Oraimo Watch 6", image_url: "http://i/w.jpg" };
+
+  // Sans variation : un seul article, comme avant.
+  eq("aucune variation → 1 article",
+    articlesPour(P, []).articles.map((a) => a.retailerId), ["abc"]);
+  eq("variants absent → 1 article",
+    articlesPour(P, null).articles.map((a) => a.retailerId), ["abc"]);
+  // Un axe à une seule option n'est pas une variation.
+  eq("un axe à une option → 1 article",
+    articlesPour(P, [{ name: "Couleur", options: ["Noir"] }]).articles.length, 1);
+
+  // UN axe : autant d'articles, reliés par item_group_id. C'est ça qui donne
+  // au client un sélecteur de couleur au lieu de quatre fiches séparées.
+  const un = articlesPour(P, [{ name: "Couleur", options: ["Noir", "Bleu nuit", "Or"] }]);
+  eq("trois couleurs → trois articles",
+    un.articles.map((a) => a.retailerId), ["abc:noir", "abc:bleu-nuit", "abc:or"]);
+  chk("tous dans le même groupe", un.articles.every((a) => a.itemGroupId === "abc"));
+  eq("l'axe part en « color »", un.articles[0].champ, "color");
+  eq("le titre porte la variation", un.articles[1].titre, "Oraimo Watch 6 — Bleu nuit");
+  eq("aucun avertissement", un.avertissements, []);
+
+  // L'image propre à l'option : c'est tout l'intérêt d'un sélecteur de couleur.
+  const img = articlesPour(P, [{ name: "Couleur", options: [{ value: "Rouge", image: "http://i/r.jpg" }, "Noir"] }]);
+  eq("l'image de l'option est prise", img.articles[0].image, "http://i/r.jpg");
+  eq("sinon celle du produit", img.articles[1].image, "http://i/w.jpg");
+
+  // LA DÉCISION IMPORTANTE. « Couleur × Taille » avec 4 et 4 donnerait SEIZE
+  // articles, dont le marchand n'a jamais dit qu'ils existaient et dont il n'a
+  // pas le stock. Inventer des combinaisons, c'est inventer de la marchandise.
+  const deux = articlesPour(P, [
+    { name: "Couleur", options: ["Noir", "Bleu"] },
+    { name: "Taille", options: ["S", "M"] },
+  ]);
+  eq("deux axes → 1 seul article, pas 4", deux.articles.length, 1);
+  chk("et on dit pourquoi au marchand", deux.avertissements[0].includes("Couleur, Taille"));
+  chk("avec la marche à suivre", deux.avertissements[0].includes("produit par combinaison"));
+
+  // Les options en doublon ne créent pas deux fois le même article.
+  eq("doublon d'option ignoré",
+    articlesPour(P, [{ name: "Couleur", options: ["Noir", "noir", "Bleu"] }]).articles.length, 2);
+
+  eq("l'axe Taille → size", champMeta("Pointure"), "size");
+  eq("un axe inconnu → étiquette libre", champMeta("Parfum"), "custom_label_0");
+  eq("les accents sont réduits", slug("Bleu Nuit Élégant"), "bleu-nuit-elegant");
+  eq("identifiant de variation", idVariante("abc", "Bleu nuit"), "abc:bleu-nuit");
+
+  // LE STOCK. Une commande porte le retailer_id de la VARIATION, et c'est le
+  // parent qui tient le stock. Sans ce calcul, une commande de variation ne
+  // décompterait rien — le défaut d'origine, par une autre porte.
+  eq("le parent d'une variation", produitParent("abc:bleu-nuit"), "abc");
+  eq("un produit simple est son propre parent", produitParent("abc"), "abc");
+  eq("un identifiant vide ne casse rien", produitParent(""), "");
+
+  // ── Meta → Camille ──────────────────────────────────────────────────────
+  // Sans regroupement, un produit en quatre couleurs créerait QUATRE produits
+  // Camille, et le catalogue du marchand doublerait à chaque synchronisation.
+  const g = grouperVariantes([
+    { retailer_id: "abc:noir", name: "Watch 6 — Noir", item_group_id: "abc", color: "Noir" },
+    { retailer_id: "abc:bleu", name: "Watch 6 — Bleu", item_group_id: "abc", color: "Bleu" },
+    { retailer_id: "zz", name: "FreePods" },
+  ]);
+  eq("deux couleurs + un seul → 2 produits", g.length, 2);
+  eq("le groupe porte ses deux membres", g[0].membres, ["abc:noir", "abc:bleu"]);
+  eq("l'axe est reconstruit", g[0].axes, [{ name: "Couleur", options: ["Noir", "Bleu"] }]);
+  // Le suffixe de variation est retiré du nom : « Watch 6 — Noir » et
+  // « Watch 6 — Bleu » donnent « Watch 6 », pas l'un des deux.
+  eq("le nom perd le suffixe", g[0].principal.name, "Watch 6");
+  eq("un article seul garde son nom", g[1].principal.name, "FreePods");
+  eq("un article seul n'a pas d'axe", g[1].axes, []);
+
+  // Un champ identique partout n'est pas un axe : ce serait un faux choix.
+  eq("une couleur unique n'est pas un axe",
+    grouperVariantes([
+      { retailer_id: "a:1", name: "X", item_group_id: "a", color: "Noir", size: "S" },
+      { retailer_id: "a:2", name: "X", item_group_id: "a", color: "Noir", size: "M" },
+    ])[0].axes, [{ name: "Taille", options: ["S", "M"] }]);
+
+  eq("un item sans retailer_id est ignoré", grouperVariantes([{ retailer_id: "" }]).length, 0);
+}
+
 // ═══ lib/orders — les heures d'ouverture en texte libre ═════════════════════
 {
   const { closedNotice, lireHoraires, estOuvert } = await import(`${DIST}/horaires.js`);

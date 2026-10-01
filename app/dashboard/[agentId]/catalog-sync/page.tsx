@@ -36,6 +36,7 @@ type Resultat = {
   envoyes_chez_meta?: number;
   importes_dans_camille?: number;
   relies?: number;
+  variations?: number;
   avertissements?: string[];
   note?: string;
 };
@@ -181,6 +182,13 @@ export default function CatalogSyncPage() {
               <strong>{res.relies ?? 0}</strong> rapprochés — ils existaient des deux
               côtés sous le même nom, et sont maintenant un seul article
             </li>
+            {res.variations ? (
+              <li>
+                <strong>{res.variations}</strong> déclinaisons traduites — vos couleurs
+                ou tailles deviennent un sélecteur sur la fiche WhatsApp, au lieu
+                d&apos;autant de fiches séparées
+              </li>
+            ) : null}
           </ul>
           {res.note ? (
             <p style={{ fontSize: 12.5, color: "var(--cl-sub)", lineHeight: 1.5, marginTop: 10 }}>{res.note}</p>
