@@ -68,6 +68,7 @@ export default function OrdersPage() {
   const [diag, setDiag] = useState<{ ready: boolean; checks: { ok: boolean; label: string; detail?: string; fix?: string }[] } | null>(null);
   // La commande ouverte en fiche détaillée.
   const [detail, setDetail] = useState<Order | null>(null);
+  const [photos, setPhotos] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setBusy(true); setErr("");
@@ -89,6 +90,39 @@ export default function OrdersPage() {
       .then((d) => setAgents(Array.isArray(d.agents) ? d.agents : []))
       .catch(() => {});
   }, []);
+
+  // Les photos des articles, retrouvées par nom dans le catalogue.
+  //
+  // Les commandes passées avant que l'image soit stockée dans la ligne n'en
+  // ont pas, et le vendeur voyait une vignette vide — alors que la photo
+  // existe dans son catalogue. Elle n'est pas décorative : c'est ce qui permet
+  // de reconnaître l'article d'un coup d'œil au moment de le préparer.
+  //
+  // La clé inclut l'agent : deux commerçants peuvent vendre un article du même
+  // nom, et montrer la photo du voisin serait pire que pas de photo.
+  useEffect(() => {
+    if (!orders?.length) return;
+    const ids = [...new Set(orders.map((o) => o.agent_id).filter(Boolean))];
+    let vivant = true;
+    Promise.all(
+      ids.map((id) =>
+        fetch(`/api/agents/${id}/products`, { headers: { ...authHeaders() } })
+          .then((r) => r.json())
+          .then((d) => ({ id, produits: (d?.products ?? []) as { name?: string; image_url?: string }[] }))
+          .catch(() => ({ id, produits: [] as { name?: string; image_url?: string }[] }))
+      )
+    ).then((lots) => {
+      if (!vivant) return;
+      const m: Record<string, string> = {};
+      for (const { id, produits } of lots) {
+        for (const p of produits) {
+          if (p?.name && p.image_url) m[`${id}|${String(p.name).toLowerCase()}`] = p.image_url;
+        }
+      }
+      setPhotos(m);
+    });
+    return () => { vivant = false; };
+  }, [orders]);
 
   async function change(o: Order, status: string) {
     try {
@@ -203,7 +237,7 @@ export default function OrdersPage() {
         </div>
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
-          {list.map((o) => <OrderCard key={o.id} order={o} onChange={change} onOpen={setDetail} />)}
+          {list.map((o) => <OrderCard key={o.id} order={o} onChange={change} onOpen={setDetail} photos={photos} />)}
         </div>
       )}
 
@@ -218,12 +252,18 @@ export default function OrdersPage() {
   );
 }
 
-function OrderCard({ order: o, onChange, onOpen }: {
+function OrderCard({ order: o, onChange, onOpen, photos = {} }: {
   order: Order; onChange: (o: Order, s: string) => void; onOpen: (o: Order) => void;
+  photos?: Record<string, string>;
 }) {
-  const items: Item[] = Array.isArray(o.items)
+  const brutes: Item[] = Array.isArray(o.items)
     ? o.items
     : (() => { try { return JSON.parse(String(o.items || "[]")); } catch { return []; } })();
+  // La ligne porte sa photo depuis peu ; avant, on la retrouve au catalogue.
+  const items: Item[] = brutes.map((it) => ({
+    ...it,
+    image: it.image || photos[`${o.agent_id}|${String(it.name || "").toLowerCase()}`] || undefined,
+  }));
 
   const phone = String(o.contact_phone || "").replace(/@(c\.us|lid|s\.whatsapp\.net)$/, "");
   const hasGeo = o.lat != null && o.lng != null;

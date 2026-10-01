@@ -213,6 +213,11 @@ async function recevoirPanier(ctx: Contexte) {
       qty: Math.max(1, it.quantity),
       price: it.price || p?.price || 0,
       currency: it.currency || p?.currency || agent.currency || "XAF",
+      // La photo du catalogue. Oubliée jusqu'ici : le vendeur voyait une
+      // vignette vide dans ses commandes, alors que l'image était déjà lue
+      // par `catalogue()`. Elle n'est pas décorative — c'est ce qui permet de
+      // reconnaître l'article d'un coup d'œil au moment de le préparer.
+      image: p?.image_url || undefined,
     };
   });
 
