@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/auth-server";
 import { query } from "@/lib/db";
+import { pousserUn } from "@/lib/whatsapp/catalogue-sync";
 import { coerce } from "@/lib/productFields";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
@@ -93,5 +94,21 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
       { status: 500 }
     );
   }
-  return NextResponse.json({ product: r.rows[0] }, { status: 201 });
+  // Le catalogue doit être UNIQUE : un article créé dans Camille part chez
+  // Meta sans que le commerçant ait un second geste à faire. En arrière-plan,
+  // parce que la création a déjà réussi — la faire échouer parce que Meta n'a
+  // pas répondu serait absurde. La réconciliation complète rattrape le reste.
+  const cree = r.rows[0] as Record<string, unknown>;
+  pousserUn(agentId, {
+    id: String(cree.id), name: String(cree.name),
+    description: cree.description as string | null,
+    price: cree.price != null ? Number(cree.price) : null,
+    currency: cree.currency as string | null,
+    image_url: cree.image_url as string | null,
+    stock: cree.stock != null ? Number(cree.stock) : null,
+    category: cree.category as string | null,
+    active: cree.active as boolean | null,
+  }, { marque: (owner as { business_name?: string })?.business_name }).catch(() => {});
+
+  return NextResponse.json({ product: cree }, { status: 201 });
 }

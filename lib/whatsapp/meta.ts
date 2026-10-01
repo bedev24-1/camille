@@ -690,6 +690,43 @@ export async function syncCatalogue(
   }
 }
 
+/**
+ * Retirer des articles du catalogue Meta.
+ *
+ * Indispensable au catalogue unique : un produit supprimé dans Camille et
+ * laissé chez Meta reste proposable dans WhatsApp. Le client le met au panier,
+ * la commande tombe, et le commerçant n'a rien à vendre.
+ */
+export async function supprimerDuCatalogue(
+  retailerIds: string[], catalogId = CATALOG_ID
+): Promise<{ ok: boolean; supprimes: number; error?: string }> {
+  if (!TOKEN || !catalogId) return { ok: false, supprimes: 0, error: "WHATSAPP_TOKEN ou CATALOG_ID absent" };
+  const ids = retailerIds.filter(Boolean);
+  if (!ids.length) return { ok: true, supprimes: 0 };
+
+  try {
+    const res = await fetch(`https://graph.facebook.com/${GRAPH}/${catalogId}/items_batch`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        item_type: "PRODUCT_ITEM",
+        requests: ids.map((id) => ({ method: "DELETE", data: { id } })),
+      }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = (j.error || {}) as { message?: string; error_data?: { details?: string } };
+      return {
+        ok: false, supprimes: 0,
+        error: [err.error_data?.details, err.message].filter(Boolean).join(" — "),
+      };
+    }
+    return { ok: true, supprimes: ids.length };
+  } catch (e) {
+    return { ok: false, supprimes: 0, error: (e as Error).message };
+  }
+}
+
 /** Ce que l'environnement porte réellement — sans jamais divulguer le jeton. */
 export function metaConfigured(): {
   ok: boolean; phone_number_id: string; catalog_id: string; graph: string; token: string;

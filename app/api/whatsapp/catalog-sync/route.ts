@@ -22,6 +22,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/auth-server";
 import { query } from "@/lib/db";
 import * as meta from "@/lib/whatsapp/meta";
+import { reconcilier } from "@/lib/whatsapp/catalogue-sync";
 
 /** L'agent appartient-il bien à l'utilisateur connecté ? */
 async function proprietaire(req: NextRequest, agentId: string) {
@@ -98,61 +99,27 @@ export async function POST(req: NextRequest) {
   const agent = await proprietaire(req, agentId);
   if (!agent) return NextResponse.json({ error: "Non autorisé" }, { status: 401 });
 
-  let produits;
-  try {
-    const r = await query(PRODUITS, [agentId]);
-    produits = r.rows as meta.ProduitASyncer[];
-  } catch (e) {
-    return NextResponse.json({ error: "Lecture du catalogue impossible", detail: (e as Error).message }, { status: 500 });
-  }
-  if (!produits.length) {
-    return NextResponse.json({ error: "Ce catalogue est vide — ajoute des produits d'abord." }, { status: 400 });
-  }
-
-  const r = await meta.syncCatalogue(produits, {
+  // Un seul catalogue, vu de deux endroits : ce qui est dans Camille part chez
+  // Meta, ce qui est chez Meta et inconnu de Camille est importé, et ce qui
+  // existe des deux côtés est RELIÉ au lieu d'être dupliqué.
+  const r = await reconcilier(agentId, {
     lien: (agent.website_url as string) || `https://camille.vps.buyticle.com/catalog/${agentId}`,
     marque: (agent.business_name as string) || undefined,
   });
 
   if (!r.ok) {
-    return NextResponse.json({ error: r.error || "Synchronisation refusée par Meta", avertissements: r.avertissements }, { status: 400 });
-  }
-
-  // La correspondance : l'identifiant Camille EST le retailer_id Meta. On
-  // l'écrit pour que le flux WhatsApp retrouve le produit — et donc décompte
-  // son stock. Sans cette écriture, la synchronisation ne sert à rien.
-  let enregistres = 0;
-  let colonneAbsente = false;
-  try {
-    const ids = produits.filter((p) => p.image_url && p.price != null).map((p) => p.id);
-    if (ids.length) {
-      const u = await query(
-        `UPDATE camille.products SET meta_retailer_id = id::text, updated_at = NOW()
-          WHERE agent_id = $1 AND id = ANY($2::uuid[])`,
-        [agentId, ids]
-      );
-      enregistres = u.rowCount ?? 0;
-    }
-  } catch (e) {
-    // 42703 : migration_meta_transport.sql pas encore appliquée. La
-    // synchronisation a bien eu lieu chez Meta, mais le stock ne baissera pas
-    // tant que la correspondance n'est pas enregistrée. On le dit clairement.
-    if ((e as { code?: string }).code === "42703") colonneAbsente = true;
-    else return NextResponse.json({ error: "Correspondance non enregistrée", detail: (e as Error).message }, { status: 500 });
+    return NextResponse.json(
+      { error: r.error || "Synchronisation refusée par Meta", avertissements: r.avertissements },
+      { status: 400 }
+    );
   }
 
   return NextResponse.json({
     ok: true,
-    envoyes: r.envoyes,
-    enregistres,
+    envoyes_chez_meta: r.pousses,
+    importes_dans_camille: r.importes,
+    relies: r.relies,
     avertissements: r.avertissements,
-    ...(colonneAbsente
-      ? {
-          attention:
-            "Produits envoyés à Meta, mais la colonne products.meta_retailer_id est absente : " +
-            "applique migration_meta_transport.sql, sinon le stock ne baissera pas sur les commandes WhatsApp.",
-        }
-      : {}),
     // Le délai est normal et il faut le dire, sinon le commerçant croit que la
     // synchronisation a échoué.
     note:

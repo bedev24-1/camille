@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/auth-server";
 import { query } from "@/lib/db";
+import { pousserUn, retirerUn } from "@/lib/whatsapp/catalogue-sync";
 import { coerce } from "@/lib/productFields";
 
 type RouteContext = { params: Promise<{ agentId: string; productId: string }> };
@@ -69,7 +70,22 @@ export async function PATCH(req: NextRequest, { params }: RouteContext) {
     );
   }
   if (!r.rows.length) return NextResponse.json({ error: "Produit introuvable" }, { status: 404 });
-  return NextResponse.json({ product: r.rows[0] });
+
+  // Le prix ou le stock vient de changer : Meta doit le savoir, sinon le
+  // carrousel annonce un prix que le commerçant ne pratique plus.
+  const maj = r.rows[0] as Record<string, unknown>;
+  pousserUn(agentId, {
+    id: String(maj.id), name: String(maj.name),
+    description: maj.description as string | null,
+    price: maj.price != null ? Number(maj.price) : null,
+    currency: maj.currency as string | null,
+    image_url: maj.image_url as string | null,
+    stock: maj.stock != null ? Number(maj.stock) : null,
+    category: maj.category as string | null,
+    active: maj.active as boolean | null,
+  }).catch(() => {});
+
+  return NextResponse.json({ product: maj });
 }
 
 export async function DELETE(req: NextRequest, { params }: RouteContext) {
@@ -77,6 +93,19 @@ export async function DELETE(req: NextRequest, { params }: RouteContext) {
   if (!(await assertOwner(req, agentId))) {
     return NextResponse.json({ error: "Non autorisé" }, { status: 401 });
   }
+  // On lit le lien AVANT de supprimer : après, on ne saurait plus quel article
+  // retirer chez Meta, et il y resterait proposable à la vente.
+  let lien: string | null = null;
+  try {
+    const q = await query(
+      `SELECT COALESCE(to_jsonb(p)->>'meta_retailer_id', id::text) AS lien
+         FROM camille.products p WHERE id = $1 AND agent_id = $2`,
+      [productId, agentId]
+    );
+    lien = (q.rows[0]?.lien as string) || null;
+  } catch { /* colonne absente : l'identifiant Camille sert de repli */ }
+
   await query("DELETE FROM camille.products WHERE id = $1 AND agent_id = $2", [productId, agentId]);
+  retirerUn(lien).catch(() => {});
   return NextResponse.json({ success: true });
 }

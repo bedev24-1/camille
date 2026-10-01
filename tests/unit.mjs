@@ -350,6 +350,69 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   eq("pas un tableau → rien", validerNotes("noir"), []);
 }
 
+// ═══ appariement — ne JAMAIS dupliquer le catalogue du marchand ════════════
+{
+  const { decider } = await import(`${DIST}/whatsapp/appariement.js`);
+  groupe("appariement — un seul catalogue, vu de deux endroits");
+
+  const quoi = (cam, items) => decider(cam, items).map((d) => d.faire);
+
+  // 1. Le retailer_id EST un identifiant Camille : c'est nous qui l'avons
+  //    écrit lors d'une synchronisation précédente.
+  eq("retailer_id = id Camille → rien",
+    quoi([{ id: "abc", name: "Watch" }], [{ retailer_id: "abc", name: "Watch" }]), ["rien"]);
+
+  // 2. Le lien est déjà noté.
+  eq("lien déjà noté → rien",
+    quoi([{ id: "abc", name: "Watch", meta_retailer_id: "m1" }], [{ retailer_id: "m1", name: "Watch" }]),
+    ["rien"]);
+
+  // 3. LA RÈGLE QUI ÉVITE LE DÉSASTRE. Son catalogue est alimenté des deux
+  //    côtés : les mêmes montres existent dans Camille ET chez Meta, avec des
+  //    identifiants différents. Sans cette règle, la première synchronisation
+  //    lui crée un doublon de chaque produit.
+  eq("même nom → on relie",
+    quoi([{ id: "abc", name: "Oraimo Watch 6" }], [{ retailer_id: "m4castvg8j", name: "Oraimo Watch 6" }]),
+    ["relier"]);
+  eq("accents et casse ignorés",
+    quoi([{ id: "abc", name: "Montre Élégante" }], [{ retailer_id: "x", name: "montre elegante" }]),
+    ["relier"]);
+
+  // 4. Vraiment inconnu : on importe.
+  eq("inconnu → on importe",
+    quoi([{ id: "abc", name: "Watch" }], [{ retailer_id: "x", name: "Casque Bluetooth" }]),
+    ["importer"]);
+
+  // Deux articles Meta de même nom ne peuvent pas se brancher sur le MÊME
+  // produit Camille : le second écraserait le lien du premier, et un des deux
+  // deviendrait invendable. Le second est donc importé.
+  eq("deux fois le même nom chez Meta → un lien, un import",
+    quoi([{ id: "abc", name: "Watch" }], [{ retailer_id: "x", name: "Watch" }, { retailer_id: "y", name: "Watch" }]),
+    ["relier", "importer"]);
+
+  // Un produit Camille DÉJÀ relié ne se laisse pas reprendre par son nom.
+  eq("un produit déjà relié n'est pas repris",
+    quoi([{ id: "abc", name: "Watch", meta_retailer_id: "m1" }], [{ retailer_id: "z", name: "Watch" }]),
+    ["importer"]);
+
+  eq("un retailer_id vide est ignoré", quoi([], [{ retailer_id: "", name: "X" }]), []);
+  eq("catalogue Camille vide → tout est importé",
+    quoi([], [{ retailer_id: "a", name: "A" }, { retailer_id: "b", name: "B" }]),
+    ["importer", "importer"]);
+
+  // Le cas réel : ses cinq produits, dont trois en attente chez WhatsApp.
+  const sien = decider(
+    [{ id: "u1", name: "Oraimo Watch 6 - Premium" }, { id: "u2", name: "Oraimo FreePods" }],
+    [
+      { retailer_id: "u1", name: "Oraimo Watch 6 - Premium" },
+      { retailer_id: "m4castvg8j", name: "Oraimo FreePods" },
+      { retailer_id: "1kjusit7dl", name: "Montre Test Buyticle" },
+    ]
+  );
+  eq("son catalogue : rien, relier, importer", sien.map((d) => d.faire), ["rien", "relier", "importer"]);
+  eq("le lien pointe le bon produit", sien[1].camilleId, "u2");
+}
+
 // ═══ lib/orders — les heures d'ouverture en texte libre ═════════════════════
 {
   const { closedNotice, lireHoraires, estOuvert } = await import(`${DIST}/horaires.js`);
