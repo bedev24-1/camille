@@ -1,0 +1,136 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Trouver le bon produit, et choisir comment le montrer.
+//
+// Ce module est VOLONTAIREMENT sans aucun import : ni base de données, ni API
+// Meta, ni Next. C'est ce qui le rend éprouvable tel quel, sans démarrer
+// l'application.
+//
+// Ce n'est pas de la coquetterie. La logique vivait dans `boutique.ts`, qui
+// importe la base et l'API Meta — donc impossible à exécuter dans un test, donc
+// testée par une imitation écrite à la main. Cette imitation a fini par
+// diverger du vrai code : elle incluait un champ d'erreur que le code ne
+// gardait pas, elle passait pendant que la production échouait. Un banc d'essai
+// qui ne fait pas tourner le code qu'il prétend éprouver est pire que pas de
+// banc d'essai.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Ce dont la recherche a besoin — rien de plus. */
+export type ProduitCherchable = {
+  name: string;
+  category?: string | null;
+};
+
+export function sansAccent(s: string): string {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/['’`´]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Ponts français ↔ anglais pour les mots du commerce.
+ *
+ * Problème structurel, pas anecdotique : les commerçants d'Afrique francophone
+ * vendent des produits importés dont le nom est en anglais — « Oraimo Watch »,
+ * « FreePods » — à une clientèle qui écrit « montre » et « écouteurs ». Sans ce
+ * pont, « t'as une montre ? » ne trouve rien dans un catalogue de quatre
+ * montres. C'est arrivé en production.
+ *
+ * Volontairement court : seulement les familles réellement courantes ici. Ce
+ * n'est pas un dictionnaire, c'est un cache-misère assumé en attendant que la
+ * couche de compréhension fasse ce travail.
+ */
+export const PONTS: Record<string, string[]> = {
+  montre: ["watch", "smartwatch"],
+  montres: ["watch", "smartwatch"],
+  ecouteur: ["earbud", "earphone", "headphone", "freepods", "airpods", "buds"],
+  ecouteurs: ["earbud", "earphone", "headphone", "freepods", "airpods", "buds"],
+  casque: ["headphone", "headset"],
+  telephone: ["phone", "smartphone"],
+  portable: ["phone", "smartphone", "laptop"],
+  ordinateur: ["laptop", "computer", "pc"],
+  enceinte: ["speaker", "soundbox"],
+  chargeur: ["charger", "powerbank"],
+  batterie: ["powerbank", "battery"],
+  sac: ["bag", "backpack"],
+  chaussure: ["shoe", "sneaker"],
+  chaussures: ["shoe", "sneaker"],
+};
+
+/**
+ * « montre-moi » (le verbe) ou « une montre » (l'objet) ?
+ *
+ * En français les deux s'écrivent pareil. Le détecteur de « montre-moi la
+ * boutique » contenait `montre` nu : toute demande de montre était donc lue
+ * comme une demande de catalogue. Pour une boutique qui VEND des montres,
+ * chaque client recevait tout sauf ce qu'il demandait.
+ *
+ * On exige la forme verbale — « montre » suivi d'un complément de présentation
+ * — et on la refuse derrière un déterminatif.
+ */
+export function veutToutVoir(message: string, resto = false): boolean {
+  const t = sansAccent(message);
+  if (resto) {
+    return /\bmenu\b|la carte|vos plats|qu est ce que vous avez|qu est ce qu il y a|proposez/.test(t);
+  }
+  const verbeMontrer =
+    /\bmontre[rz]?\s+(moi|nous|me|le|la|les|lui|ton|votre|vos|tes)\b/.test(t) &&
+    !/\b(une|des|ma|ta|sa|cette|quelle|quelques?|deux|trois)\s+montre/.test(t);
+
+  return (
+    verbeMontrer ||
+    /catalogue|boutique|vos (produits|articles)|qu est ce que vous (avez|vendez)|voir tout|tout voir|tout ce que vous|les prix/.test(t)
+  );
+}
+
+/**
+ * Les produits dont le nom recoupe la demande.
+ *
+ * Comparaison par MOT ENTIER, en tolérant le préfixe pour les pluriels. La
+ * comparaison par sous-chaîne faisait compter « est » à l'intérieur de « Montre
+ * Test Buyticle » : ce mot outil marquait alors plus de points que les vrais
+ * noms de produits, et « est-ce que t'as une montre » ne renvoyait qu'un
+ * article au lieu des quatre montres du catalogue.
+ */
+export function chercher<T extends ProduitCherchable>(prods: T[], demande: string): T[] {
+  const bruts = sansAccent(demande).split(/\s+/).filter((w) => w.length >= 3);
+  // Chaque mot amène ses équivalents : « montre » cherche aussi « watch ».
+  const mots = [...new Set(bruts.flatMap((w) => [w, ...(PONTS[w] || [])]))];
+  if (!mots.length) return [];
+
+  const notes = prods.map((p) => {
+    const jetons = new Set(
+      sansAccent(`${p.name} ${p.category || ""}`).split(/[^a-z0-9]+/).filter(Boolean)
+    );
+    const n = mots.filter(
+      (w) => jetons.has(w) || [...jetons].some((j) => j.length > 3 && j.startsWith(w))
+    ).length;
+    return { p, n };
+  });
+
+  const max = Math.max(...notes.map((x) => x.n), 0);
+  return max > 0 ? notes.filter((x) => x.n === max).map((x) => x.p) : [];
+}
+
+/**
+ * Quel format natif pour ce nombre de produits ?
+ *
+ * Les quatre formats ont été éprouvés en production sur le numéro Buyticle :
+ *
+ *   1            → `product`         la fiche, photo et prix du catalogue
+ *   2 à 10       → `carousel`        les fiches défilent — le plus vendeur
+ *   plus de 10   → `product_list`    une liste par catégories
+ *   0            → rien à montrer
+ *
+ * La décision est ici, et non noyée dans une cascade de `if`, parce que c'est
+ * la chose la plus visible pour le client.
+ */
+export function formatPour(n: number): "aucun" | "fiche" | "carrousel" | "liste" {
+  if (n <= 0) return "aucun";
+  if (n === 1) return "fiche";
+  if (n <= 10) return "carrousel";
+  return "liste";
+}

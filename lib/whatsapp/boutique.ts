@@ -20,6 +20,7 @@ import { sectorProfile } from "@/lib/sectorProfiles";
 import { createOrder } from "@/lib/orders";
 import * as meta from "./meta";
 import { tracer, sessionMeta, type Contexte } from "./handle";
+import { sansAccent, chercher, veutToutVoir, formatPour } from "./recherche";
 
 // ── Identifiants de nos propres boutons ─────────────────────────────────────
 // Préfixés pour ne jamais être confondus avec un identifiant de catalogue.
@@ -31,7 +32,7 @@ const B = {
   infos: "cam:infos",
 } as const;
 
-type Produit = {
+export type Produit = {
   id: string;
   name: string;
   price: number | null;
@@ -41,16 +42,6 @@ type Produit = {
   image_url: string | null;
   retailerId: string;
 };
-
-function sansAccent(s: string): string {
-  return String(s || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/['’`´]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 function money(n: number, cur = "XAF"): string {
   return `${String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, " ")} ${cur}`;
@@ -122,64 +113,6 @@ async function catalogue(agentId: string): Promise<Produit[]> {
       };
     });
 }
-
-/**
- * Ponts français ↔ anglais pour les mots du commerce.
- *
- * Problème structurel, pas anecdotique : les commerçants d'Afrique francophone
- * vendent des produits importés dont le nom est en anglais — « Oraimo Watch »,
- * « FreePods » — à une clientèle qui écrit « montre » et « écouteurs ». Sans ce
- * pont, « t'as une montre ? » ne trouve rien dans un catalogue de quatre
- * montres.
- *
- * Volontairement court : seulement les familles de produits réellement
- * courantes ici. Ce n'est pas un dictionnaire, c'est un cache-misère assumé en
- * attendant que la couche de compréhension fasse ce travail.
- */
-const PONTS: Record<string, string[]> = {
-  montre: ["watch", "smartwatch"],
-  ecouteur: ["earbud", "earphone", "headphone", "freepods", "airpods", "buds"],
-  ecouteurs: ["earbud", "earphone", "headphone", "freepods", "airpods", "buds"],
-  casque: ["headphone", "headset"],
-  telephone: ["phone", "smartphone"],
-  portable: ["phone", "smartphone", "laptop"],
-  ordinateur: ["laptop", "computer", "pc"],
-  enceinte: ["speaker", "soundbox"],
-  chargeur: ["charger", "powerbank"],
-  batterie: ["powerbank", "battery"],
-  sac: ["bag", "backpack"],
-  chaussure: ["shoe", "sneaker"],
-  chaussures: ["shoe", "sneaker"],
-  montres: ["watch", "smartwatch"],
-};
-
-/** Les produits dont le nom recoupe la demande. */
-function chercher(prods: Produit[], demande: string): Produit[] {
-  const bruts = sansAccent(demande).split(/\s+/).filter((w) => w.length >= 3);
-  // Chaque mot amène ses équivalents : « montre » cherche aussi « watch ».
-  const mots = [...new Set(bruts.flatMap((w) => [w, ...(PONTS[w] || [])]))];
-  if (!mots.length) return [];
-  // Correspondance par MOT ENTIER, pas par sous-chaîne : « est » ne doit pas
-  // compter dans « Montre Test Buyticle ». Sinon un mot outil mal placé marque
-  // plus de points qu'un vrai nom de produit et écrase le résultat — c'est ce
-  // qui faisait répondre une seule montre à « t'as une montre » quand le
-  // message contenait aussi « est ».
-  const notes = prods.map((p) => {
-    const jetons = new Set(
-      sansAccent(`${p.name} ${p.category || ""}`).split(/[^a-z0-9]+/).filter(Boolean)
-    );
-    // Un mot compte s'il est un jeton du produit, ou le préfixe d'un jeton
-    // (« watch » dans « watches », « chaussure » dans « chaussures »).
-    const n = mots.filter(
-      (w) => jetons.has(w) || [...jetons].some((j) => j.length > 3 && j.startsWith(w))
-    ).length;
-    return { p, n };
-  });
-  const max = Math.max(...notes.map((x) => x.n), 0);
-  return max > 0 ? notes.filter((x) => x.n === max).map((x) => x.p) : [];
-}
-
-// ── Les envois ──────────────────────────────────────────────────────────────
 
 /**
  * Montrer des produits — un format par situation.
@@ -415,24 +348,7 @@ export async function repondreBoutique(
   }
 
   // 6. Le catalogue, demandé de mille façons.
-  // « montre » est en français le verbe ET l'objet. Ce détecteur contenait
-  // `montre` nu pour attraper « montre-moi la boutique » — et lisait donc
-  // « est-ce que t'as une montre » comme « montre-moi tout ». Pour une boutique
-  // qui VEND des montres, chaque client recevait le catalogue entier au lieu de
-  // l'article qu'il demandait.
-  //
-  // On exige donc la forme verbale : « montre » suivi d'un complément de
-  // présentation (moi, nous, les, vos…). Précédé d'un déterminatif — « une
-  // montre », « ta montre », « cette montre » — c'est l'objet, et ça part en
-  // recherche produit.
-  const verbeMontrer = /\bmontre[rz]?\s+(moi|nous|me|le|la|les|lui|ton|votre|vos|tes)\b/.test(t)
-    && !/\b(une|des|ma|ta|sa|cette|quelle|quelques?|deux|trois)\s+montre/.test(t);
-
-  const veutVitrine = resto
-    ? /\bmenu\b|la carte|vos plats|qu est ce que vous avez|qu est ce qu il y a|proposez/.test(t)
-    : verbeMontrer
-      || /catalogue|boutique|vos (produits|articles)|qu est ce que vous (avez|vendez)|voir tout|tout voir|tout ce que vous|les prix/.test(t);
-  if (veutVitrine) {
+  if (veutToutVoir(msg.text, resto)) {
     const prods = await catalogue(agent.id);
     return montrerVitrine(
       ctx, prods,
