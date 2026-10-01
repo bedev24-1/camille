@@ -95,8 +95,19 @@ async function catalogue(agentId: string): Promise<Produit[]> {
     console.error("[boutique] catalogue Meta illisible :", m.error);
     return [];
   }
+  // On n'offre QUE les produits que WhatsApp accepte réellement en message.
+  // `sendable` vient de `capability_to_review_status` / clé WHATSAPP : un
+  // produit « in stock » et « published » peut très bien être refusé à l'envoi
+  // s'il n'a pas passé l'examen commerce. Les écarter ici évite de reposer sur
+  // le repli par essais-erreurs — qui reste, mais ne devrait plus servir.
+  const ecartes = m.items.filter((it) => it.sendable === false).map((it) => it.retailer_id);
+  if (ecartes.length) {
+    console.warn(
+      `[boutique] ${ecartes.length} produit(s) en attente d'approbation WhatsApp, non proposés : ${ecartes.join(", ")}`
+    );
+  }
   return m.items
-    .filter((it) => it.availability !== "out of stock")
+    .filter((it) => it.availability !== "out of stock" && it.sendable !== false)
     .map((it) => {
       // Meta renvoie le prix formaté (« 5 000,00 XAF ») : on en extrait le
       // nombre pour pouvoir calculer un total.

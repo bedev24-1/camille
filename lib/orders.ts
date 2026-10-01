@@ -7,6 +7,7 @@
 // D'où cette fonction partagée plutôt qu'un second chemin qui divergerait.
 // ─────────────────────────────────────────────────────────────────────────────
 import { query } from "@/lib/db";
+import { closedNotice } from "@/lib/horaires";
 import { notifyUser } from "@/lib/fcm";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -220,40 +221,6 @@ export async function restoreStock(agentId: string, items: NewOrderItem[]) {
   }
 }
 
-/**
- * Ce qu'il faut dire à un client qui commande alors que la boutique est fermée.
- *
- * `business_hours` est un champ libre : on n'en tire une plage que si elle y
- * est écrite noir sur blanc. Sans certitude on ne dit rien — annoncer une
- * heure d'ouverture inventée vaut moins que le silence, et se retourne contre
- * le commerçant quand personne ne répond à l'heure promise.
- *
- * @param hours   texte saisi par le commerçant
- * @param offset  décalage horaire du commerce (Cameroun : +1)
- */
-export function closedNotice(hours?: string | null, offset = 1): string {
-  const t = String(hours || "").toLowerCase().replace(/\s+/g, " ");
-  if (/24\s*\/\s*24|non.?stop/.test(t)) return "";
-
-  const m = t.match(/(\d{1,2})\s*h(?:\s*(\d{2}))?\s*(?:[-—–a à ]+)\s*(\d{1,2})\s*h(?:\s*(\d{2}))?/);
-  if (!m) return "";
-
-  const open = Number(m[1]) + Number(m[2] || 0) / 60;
-  const close = Number(m[3]) + Number(m[4] || 0) / 60;
-  if (!(open >= 0 && open <= 24 && close >= 0 && close <= 24) || open === close) return "";
-
-  const now = new Date();
-  const h = ((((now.getUTCHours() + offset) % 24) + 24) % 24) + now.getUTCMinutes() / 60;
-  const ouvert = open < close ? h >= open && h < close : h >= open || h < close;
-  if (ouvert) return "";
-
-  const lbl = (x: number) => {
-    const n = Math.floor(x);
-    const mn = Math.round((x - n) * 60);
-    return `${n}h${mn ? String(mn).padStart(2, "0") : ""}`;
-  };
-  return `\n\n😴 On est fermé pour le moment. Ta commande est bien enregistrée et sera prise en charge dès l'ouverture, à ${lbl(open)}.`;
-}
 
 export async function createOrder(input: NewOrder): Promise<CreatedOrder | { ok: false; error: string }> {
   const items = Array.isArray(input.items) ? input.items : [];

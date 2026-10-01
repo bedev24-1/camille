@@ -502,6 +502,22 @@ export type MetaCatalogItem = {
   availability?: string;
   image_url?: string;
   description?: string;
+  /**
+   * Ce produit peut-il être envoyé dans un message WhatsApp ?
+   *
+   * Découverte coûteuse : un produit peut figurer au catalogue en `in stock` et
+   * `published`, et rester refusé à l'envoi — « product not found for
+   * product_retailer_id … ». Trois produits du catalogue de production étaient
+   * dans ce cas, et un seul d'entre eux dans une vitrine faisait rejeter TOUT
+   * le message.
+   *
+   * Le discriminant est `capability_to_review_status`, clé `WHATSAPP` :
+   * `APPROVED` = envoyable ; `NO_REVIEW` = pas encore passé par l'examen
+   * commerce de WhatsApp. Un produit fraîchement synchronisé est dans ce
+   * second état — ce n'est donc pas une anomalie, c'est le cycle normal.
+   */
+  sendable?: boolean;
+  wa_status?: string;
 };
 
 /**
@@ -516,7 +532,8 @@ export async function listCatalog(catalogId = CATALOG_ID, limit = 50): Promise<{
 }> {
   if (!TOKEN || !catalogId) return { ok: false, items: [], error: "WHATSAPP_TOKEN ou CATALOG_ID absent" };
   try {
-    const fields = "retailer_id,name,price,availability,image_url,description";
+    const fields =
+      "retailer_id,name,price,availability,image_url,description,capability_to_review_status";
     const res = await fetch(
       `https://graph.facebook.com/${GRAPH}/${catalogId}/products?fields=${fields}&limit=${limit}`,
       { headers: { Authorization: `Bearer ${TOKEN}` } }
@@ -526,9 +543,111 @@ export async function listCatalog(catalogId = CATALOG_ID, limit = 50): Promise<{
       const err = (json.error || {}) as { message?: string };
       return { ok: false, items: [], error: err.message || `HTTP ${res.status}` };
     }
-    return { ok: true, items: (json.data || []) as MetaCatalogItem[] };
+    const items = ((json.data || []) as (MetaCatalogItem & {
+      capability_to_review_status?: { key: string; value: string }[];
+    })[]).map((it) => {
+      const wa = (it.capability_to_review_status || []).find((c) => c.key === "WHATSAPP");
+      return { ...it, wa_status: wa?.value, sendable: wa?.value === "APPROVED" };
+    });
+    return { ok: true, items };
   } catch (e) {
     return { ok: false, items: [], error: (e as Error).message };
+  }
+}
+
+// ── Synchronisation : camille.products → catalogue Meta ─────────────────────
+
+export type ProduitASyncer = {
+  /** L'identifiant Camille. Il devient le `retailer_id` chez Meta. */
+  id: string;
+  name: string;
+  description?: string | null;
+  price?: number | null;
+  currency?: string | null;
+  image_url?: string | null;
+  stock?: number | null;
+  category?: string | null;
+  active?: boolean;
+};
+
+/**
+ * Pousse les produits de Camille vers le catalogue Meta.
+ *
+ * `camille.products.id` devient le `retailer_id`. C'est la décision prise une
+ * fois pour toutes : un seul identifiant de produit partout — catalogue Meta,
+ * Pixel, CAPI, commandes. Elle ne coûte rien aujourd'hui, et réconcilier trois
+ * systèmes aux identifiants différents coûterait des semaines plus tard.
+ *
+ * `items_batch` + méthode `UPDATE` fait un upsert : le même appel crée ou met à
+ * jour, ce qui rend la synchronisation rejouable sans précaution.
+ *
+ * Un produit inactif ou épuisé n'est pas supprimé mais passé `out of stock` :
+ * supprimer bloquerait son identifiant chez Meta, comme pour les modèles de
+ * message.
+ */
+export async function syncCatalogue(
+  produits: ProduitASyncer[],
+  options: { catalogId?: string; lien?: string; marque?: string } = {}
+): Promise<{ ok: boolean; envoyes: number; avertissements: string[]; error?: string }> {
+  const catalogId = options.catalogId || CATALOG_ID;
+  if (!TOKEN || !catalogId) {
+    return { ok: false, envoyes: 0, avertissements: [], error: "WHATSAPP_TOKEN ou CATALOG_ID absent" };
+  }
+  if (!produits.length) return { ok: true, envoyes: 0, avertissements: [] };
+
+  // Meta refuse un produit sans image ni prix : autant le dire plutôt que de
+  // laisser la synchronisation échouer en bloc.
+  const avertissements: string[] = [];
+  const valides = produits.filter((p) => {
+    if (!p.image_url) { avertissements.push(`${p.name} : pas d'image, non synchronisé`); return false; }
+    if (p.price == null) { avertissements.push(`${p.name} : pas de prix, non synchronisé`); return false; }
+    return true;
+  });
+  if (!valides.length) return { ok: true, envoyes: 0, avertissements };
+
+  const requests = valides.map((p) => ({
+    method: "UPDATE",
+    data: {
+      id: p.id,
+      title: String(p.name).slice(0, 200),
+      description: String(p.description || p.name).slice(0, 9999),
+      // Meta attend le prix et la devise dans la même chaîne.
+      price: `${Math.round(Number(p.price))} ${p.currency || "XAF"}`,
+      availability: p.active === false || (p.stock != null && p.stock <= 0) ? "out of stock" : "in stock",
+      condition: "new",
+      image_link: p.image_url,
+      link: options.lien || "https://camille.vps.buyticle.com",
+      ...(options.marque ? { brand: options.marque } : {}),
+      ...(p.category ? { product_type: p.category } : {}),
+      ...(p.stock != null ? { inventory: Math.max(0, Number(p.stock)) } : {}),
+    },
+  }));
+
+  try {
+    const res = await fetch(`https://graph.facebook.com/${GRAPH}/${catalogId}/items_batch`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ item_type: "PRODUCT_ITEM", requests }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = (j.error || {}) as {
+        message?: string; error_user_msg?: string; error_data?: { details?: string };
+      };
+      return {
+        ok: false, envoyes: 0, avertissements,
+        error: [err.error_user_msg, err.error_data?.details, err.message].filter(Boolean).join(" — "),
+      };
+    }
+    // Meta renvoie ses propres remarques par produit : on les fait remonter.
+    for (const v of (j.validation_status || []) as {
+      retailer_id?: string; errors?: { message?: string }[]; warnings?: { message?: string }[];
+    }[]) {
+      for (const e of v.errors || []) avertissements.push(`${v.retailer_id} : ${e.message}`);
+    }
+    return { ok: true, envoyes: valides.length, avertissements };
+  } catch (e) {
+    return { ok: false, envoyes: 0, avertissements, error: (e as Error).message };
   }
 }
 
