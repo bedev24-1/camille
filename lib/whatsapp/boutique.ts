@@ -82,7 +82,11 @@ const B = {
  * d'environnement. Sans URL configurée, on explique en texte — on ne reste
  * jamais muet sur une promesse qu'on vient de faire au client.
  */
-const TUTO_URL = process.env.TUTO_VIDEO_URL || "";
+// Une vidéo de démonstration publique, pour éprouver le mécanisme avant d'avoir
+// filmé la vraie : 15 s, 11,9 Mo, vrai video/mp4, joignable sans compte.
+// Vérifiée : la même source en 30 s fait 21,6 Mo et Meta la REFUSE (limite 16 Mo).
+const TUTO_DEMO = "https://download.samplelib.com/mp4/sample-15s.mp4";
+const TUTO_URL = process.env.TUTO_VIDEO_URL || TUTO_DEMO;
 
 export type Produit = {
   id: string;
@@ -343,15 +347,14 @@ async function envoyerTuto(ctx: Contexte, resto: boolean) {
     "2️⃣ Tu touches *Ajouter au panier* sur ceux que tu veux\n" +
     "3️⃣ Tu m'envoies le panier — et c'est commandé 🛒";
 
-  if (TUTO_URL) {
-    const r = await meta.sendVideo(phone, TUTO_URL, legende);
-    if (!r.ok) {
-      console.error("[boutique] vidéo du tuto refusée :", r.error);
-      await meta.sendText(phone, legende);
-    }
-  } else {
-    // Pas de vidéo configurée : on tient quand même la promesse, en texte.
-    console.warn("[boutique] TUTO_VIDEO_URL absente — mode d'emploi envoyé en texte");
+  if (TUTO_URL === TUTO_DEMO) {
+    console.warn("[boutique] TUTO_VIDEO_URL absente — vidéo de démonstration envoyée");
+  }
+  const r = await meta.sendVideo(phone, TUTO_URL, legende);
+  if (!r.ok) {
+    // Meta n'a pas pu récupérer la vidéo : on tient quand même la promesse
+    // qu'on vient de faire au client, en texte. Les trois étapes sont là.
+    console.error("[boutique] vidéo du tuto refusée :", r.error);
     await meta.sendText(phone, legende);
   }
   await tracer(agent.id, phone, "assistant", "[mode d'emploi]");

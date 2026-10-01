@@ -94,6 +94,41 @@ export function phraseAncree(texte: string, faitsConnus: string[]): boolean {
   return nombresDe(texte).every((n) => connus.has(n));
 }
 
+/**
+ * Cette phrase promet-elle une action que l'agent ne sait pas faire ?
+ *
+ * Le second garde-fou, et il est né d'un cas observé. Sur « ça fait 3 jours
+ * que j'attends ma commande, c'est inadmissible », le modèle a répondu « je
+ * vérifie immédiatement et je reviens vers toi ». Tout était ancré, aucun
+ * chiffre inventé — et c'était pourtant la pire réponse possible : l'agent ne
+ * peut pas consulter une commande, et personne n'avait été alerté. Le client
+ * attend un rappel qui ne viendra jamais.
+ *
+ * L'ancrage protège les CHIFFRES ; celui-ci protège les ENGAGEMENTS. Une
+ * promesse n'est tenable que si un outil la réalise — donc, pour tout ce qui
+ * relève du suivi, seul le passage à un humain est honnête.
+ *
+ * Oui, c'est une liste de mots, et c'est précisément ce que je dis vouloir
+ * éviter ailleurs. La différence : ce n'est pas le chemin de compréhension,
+ * c'est le filet en dessous. Il ne décide de rien, il refuse.
+ */
+export function promesseNonTenable(texte: string): boolean {
+  const t = texte
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    // L'apostrophe devient une espace : « je m'en occupe » et « je m en
+    // occupe » sont la même promesse.
+    .replace(/['’`´]/g, " ")
+    .replace(/\s+/g, " ");
+  return (
+    /\bje (vais )?(verifi|regard|contact|appel|relanc|transmet|signal|renseign|confirm)/.test(t) ||
+    /\bje (te )?(revien|reponds|rappelle|recontacte|tiens au courant|previens)/.test(t) ||
+    /\b(on|nous) (te )?(revient|rappelle|recontacte|reviendra|contacter)/.test(t) ||
+    /\bje m en occupe\b|\bje regarde ca\b|\bje check\b|\bdes que possible\b|\btres vite\b/.test(t)
+  );
+}
+
 /** Tout ce qui, dans cette conversation, autorise un nombre dans une réponse. */
 export function faitsNumeriques(
   prods: ProduitConnu[], faits: FaitsCommerce, messageClient: string
@@ -129,6 +164,7 @@ export function valider(
   const ancres = faitsNumeriques(prods, faits, messageClient);
   const actions: Action[] = [];
   const rejets: string[] = [];
+  let promesse = false;
 
   for (const a of Array.isArray(o.actions) ? o.actions : []) {
     if (!a || typeof a !== "object") continue;
@@ -164,6 +200,10 @@ export function valider(
           rejets.push(`nombre non ancré : « ${texte.slice(0, 80)} »`);
           break;
         }
+        // Un engagement de suivi est tenable SI un humain prend réellement le
+        // relais. On ne peut pas le savoir ici — `humain` peut arriver après
+        // dans la liste — donc on note et on tranche à la fin.
+        if (promesseNonTenable(texte)) promesse = true;
         actions.push({ faire: "repondre", texte: texte.slice(0, 900) });
         break;
       }
@@ -171,6 +211,11 @@ export function valider(
   }
 
   if (!actions.length) return null;
+
+  // Une promesse de suivi sans humain au bout est un mensonge. On n'essaie pas
+  // de la réécrire : on écarte toute la compréhension, et le repli
+  // déterministe envoie la réclamation à un humain — ce qu'il fallait faire.
+  if (promesse && !actions.some((a) => a.faire === "humain")) return null;
 
   const c = Number(o.certitude);
   return {
@@ -187,7 +232,22 @@ export function valider(
 
 const BASE = (process.env.IA_BASE_URL || "https://api.groq.com/openai/v1").replace(/\/$/, "");
 const CLE = process.env.IA_KEY || process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || "";
-const MODELE = process.env.IA_MODEL || "llama-3.3-70b-versatile";
+
+/**
+ * Les modèles, du meilleur au plus modeste.
+ *
+ * Chez Groq la limite de jetons par minute est comptée PAR MODÈLE : 8000 sur
+ * l'offre gratuite, soit une douzaine de messages par minute. Basculer sur le
+ * modèle suivant à la première saturation triple donc la capacité, sans un
+ * centime — et c'est le genre de minute qui compte, puisque c'est précisément
+ * quand ça afflue que ça sature.
+ *
+ * Le repli déterministe reste derrière, si les trois saturent ensemble.
+ */
+const MODELES = (process.env.IA_MODEL || "openai/gpt-oss-120b,openai/gpt-oss-20b,qwen/qwen3.8-27b")
+  .split(",")
+  .map((m) => m.trim())
+  .filter(Boolean);
 
 export function comprehensionDisponible(): boolean {
   return Boolean(CLE);
@@ -204,44 +264,42 @@ function consigne(prods: ProduitConnu[], faits: FaitsCommerce, resto: boolean): 
     )
     .join("\n");
 
-  return `Tu analyses le message d'un client qui écrit sur WhatsApp à ${faits.nom}${
-    resto ? ", un restaurant" : ", une boutique"
-  }.
+  return `Tu es le vendeur de ${faits.nom}${resto ? " (restaurant)" : " (boutique)"} sur WhatsApp.
 
-Ta SEULE tâche : dire ce que le client veut, en JSON. Tu ne rédiges pas de message commercial, tu ne choisis pas la mise en forme, tu n'ajoutes aucune politesse.
+Tu as une boîte à outils. Chaque outil PRODUIT quelque chose chez le client — à toi de choisir le ou les bons, comme un technicien choisit sa clé.
 
-Actions disponibles :
-- {"faire":"vitrine"} — il veut voir tout ce qu'on propose
-- {"faire":"montrer","produits":["id",...]} — il veut voir des articles précis : mets leurs identifiants. Une catégorie entière ? mets tous les identifiants de cette catégorie.
-- {"faire":"repondre","texte":"..."} — il pose une question à laquelle les faits ci-dessous répondent. Réponds en une ou deux phrases, tutoiement, français simple.
-- {"faire":"mode_emploi"} — il ne sait pas comment ça marche, ou demande comment commander
-- {"faire":"infos"} — il veut l'adresse, les horaires, où vous êtes
-- {"faire":"humain"} — il veut parler à une personne, il se plaint, il est mécontent
-- {"faire":"position"} — il veut donner ou corriger son adresse de livraison
-- {"faire":"retrait"} — il préfère venir chercher sur place
-- {"faire":"accueil"} — simple salutation, rien de plus
+{"faire":"montrer","produits":["id","id"]} → envoie la VRAIE fiche WhatsApp : photo, prix, et le bouton « Ajouter au panier ». C'est le SEUL outil avec lequel le client peut acheter. Dès qu'il parle d'un article qu'on a, utilise-le : décrire un produit par du texte au lieu d'envoyer sa fiche, c'est lui retirer le bouton d'achat.
+{"faire":"vitrine"} → la même chose pour tout le catalogue. Quand il n'a rien visé de précis.
+{"faire":"repondre","texte":"..."} → un simple message. Pour ce qui n'est PAS un produit : livraison, horaires, une confirmation. Une ou deux phrases, tutoiement.
+{"faire":"infos"} → envoie l'adresse et notre position sur la carte.
+{"faire":"position"} → affiche le bouton natif « Envoyer ma position ». Pour obtenir ou corriger une adresse de livraison.
+{"faire":"retrait"} → il vient chercher sur place.
+{"faire":"mode_emploi"} → la vidéo qui montre comment commander.
+{"faire":"humain"} → passe la main à l'équipe, et tu te tais après.
+{"faire":"accueil"} → une salutation, rien de plus à faire.
 
-RÈGLES ABSOLUES
-1. Plusieurs intentions dans un message ? Mets PLUSIEURS actions, dans l'ordre où il les a exprimées.
-2. N'invente JAMAIS un identifiant de produit. Utilise uniquement ceux de la liste. Si ce qu'il demande n'y est pas, réponds {"faire":"vitrine"}.
-3. N'invente JAMAIS un chiffre : prix, stock, délai, frais. Si un chiffre n'est pas dans les faits ci-dessous, ne l'écris pas. Pas de délai de livraison, jamais.
-4. Tu ne sais pas ? Baisse "certitude". Une certitude basse est traitée sans toi, ce n'est pas un échec.
+COMBINER est normal, et souvent meilleur : un prix se répond ET se montre (repondre + montrer), « des écouteurs, et vous livrez ? » c'est montrer + repondre. Mets les outils dans l'ordre utile.
 
-FAITS (la seule vérité)
-Commerce : ${faits.nom}${faits.adresse ? ` — ${faits.adresse}` : ""}
-${faits.horaires ? `Horaires : ${faits.horaires}` : "Horaires : non renseignés"}
+INTERDITS
+• Un identifiant hors catalogue. Ce qu'il cherche n'y est pas → dis-le avec repondre, puis vitrine.
+• Un chiffre absent des faits : prix, stock, frais. Et JAMAIS de délai de livraison — personne ne te l'a autorisé.
+• NE PROMETS JAMAIS une action que tes outils ne font pas. Tu ne peux pas consulter une commande, relancer un livreur, rappeler quelqu'un, ni « revenir vers lui ». Un client qui attend, qui réclame, qui se plaint, dont la commande a un problème → {"faire":"humain"}, et RIEN d'autre. C'est la seule réponse honnête : une personne prend vraiment le relais.
+• Tu hésites → baisse certitude. En dessous de 0,55 c'est traité sans toi, ce n'est pas un échec.
+
+FAITS — la seule vérité
+${faits.nom}${faits.adresse ? ` · ${faits.adresse}` : ""}${faits.horaires ? ` · ouvert ${faits.horaires}` : ""}
 Livraison : ${
     faits.livraison
       ? faits.fraisLivraison != null
         ? `oui, ${faits.fraisLivraison} ${faits.devise}`
         : "oui, frais non renseignés"
-      : "non, retrait sur place"
+      : "non, retrait sur place uniquement"
   }
 
-CATALOGUE (identifiant | nom | catégorie | prix)
+CATALOGUE — id | nom | catégorie | prix
 ${liste || "(vide)"}
 
-Réponds uniquement : {"actions":[...],"certitude":0.0,"raisonnement":"..."}`;
+Réponds en JSON seul : {"actions":[...],"certitude":0.0,"raisonnement":"..."}`;
 }
 
 /**
@@ -261,41 +319,55 @@ export async function comprendre(
 ): Promise<Comprehension | null> {
   if (!CLE || !message.trim()) return null;
 
-  const ctl = new AbortController();
-  const minuteur = setTimeout(() => ctl.abort(), 6000);
-  try {
-    const r = await fetch(`${BASE}/chat/completions`, {
-      method: "POST",
-      signal: ctl.signal,
-      headers: { Authorization: `Bearer ${CLE}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: MODELE,
-        temperature: 0,
-        max_tokens: 500,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: consigne(prods, faits, resto) },
-          ...historique.slice(-6).map((h) => ({
-            role: h.role === "assistant" ? "assistant" : "user",
-            content: String(h.content).slice(0, 500),
-          })),
-          { role: "user", content: message.slice(0, 1000) },
-        ],
-      }),
-    });
-    if (!r.ok) {
-      console.error("[comprendre] modèle indisponible :", r.status, (await r.text()).slice(0, 200));
-      return null;
+  const corps = {
+    temperature: 0,
+    max_tokens: 500,
+    response_format: { type: "json_object" as const },
+    messages: [
+      { role: "system", content: consigne(prods, faits, resto) },
+      ...historique.slice(-6).map((h) => ({
+        role: h.role === "assistant" ? "assistant" : "user",
+        content: String(h.content).slice(0, 500),
+      })),
+      { role: "user", content: message.slice(0, 1000) },
+    ],
+  };
+
+  for (const [i, modele] of MODELES.entries()) {
+    const ctl = new AbortController();
+    const minuteur = setTimeout(() => ctl.abort(), 6000);
+    try {
+      const r = await fetch(`${BASE}/chat/completions`, {
+        method: "POST",
+        signal: ctl.signal,
+        headers: { Authorization: `Bearer ${CLE}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modele, ...corps }),
+      });
+
+      if (r.status === 429 || r.status === 503) {
+        // Saturé : le modèle suivant a son propre compteur.
+        console.warn(`[comprendre] ${modele} saturé (${r.status})`);
+        continue;
+      }
+      if (!r.ok) {
+        console.error(`[comprendre] ${modele} refuse :`, r.status, (await r.text()).slice(0, 200));
+        continue;
+      }
+
+      const d = await r.json();
+      const brut = d?.choices?.[0]?.message?.content;
+      if (!brut) continue;
+      const c = valider(JSON.parse(brut), prods, faits, message);
+      // Un retour illisible ou entièrement rejeté : le modèle suivant peut
+      // mieux faire. Mais on ne tente pas éternellement — le client attend.
+      if (!c) continue;
+      return i === 0 ? c : { ...c, raisonnement: `${c.raisonnement} | via ${modele}` };
+    } catch (e) {
+      // Un abandon au bout de 6 s n'est pas une anomalie : c'est la décision.
+      console.error(`[comprendre] ${modele} abandonné :`, (e as Error).message);
+    } finally {
+      clearTimeout(minuteur);
     }
-    const d = await r.json();
-    const brut = d?.choices?.[0]?.message?.content;
-    if (!brut) return null;
-    return valider(JSON.parse(brut), prods, faits, message);
-  } catch (e) {
-    // Un abandon au bout de 6 s n'est pas une anomalie : c'est la décision.
-    console.error("[comprendre] abandon :", (e as Error).message);
-    return null;
-  } finally {
-    clearTimeout(minuteur);
   }
+  return null;
 }

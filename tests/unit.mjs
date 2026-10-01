@@ -131,7 +131,7 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
 
 // ═══ lib/whatsapp/comprendre — la barrière entre le modèle et le client ═════
 {
-  const { phraseAncree, nombresDe, valider, faitsNumeriques } =
+  const { phraseAncree, nombresDe, valider, faitsNumeriques, promesseNonTenable } =
     await import(`${DIST}/whatsapp/comprendre.js`);
   groupe("comprendre — le modèle propose, le code vérifie");
 
@@ -190,6 +190,27 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   eq("une certitude absente vaut 0,5", v({ actions: [{ faire: "vitrine" }] }).certitude, 0.5);
   eq("un retour vide ne vaut rien", v({ actions: [] }), null);
   eq("un retour illisible ne vaut rien", v("oups"), null);
+  // L'engagement : le second garde-fou, né d'un cas réel. Sur « ça fait 3
+  // jours que j'attends ma commande », le modèle a répondu « je vérifie et je
+  // reviens vers toi ». Tout était ancré — et c'était la pire réponse
+  // possible : l'agent ne peut pas consulter une commande, et personne n'avait
+  // été alerté. Le client attend un rappel qui ne viendra jamais.
+  chk("« je vérifie et je reviens »", promesseNonTenable("Je vérifie immédiatement et je reviens vers toi"));
+  chk("« je m'en occupe »", promesseNonTenable("Pas de souci, je m'en occupe"));
+  chk("« on te rappelle »", promesseNonTenable("On te rappelle très vite"));
+  chk("« je transmets au livreur »", promesseNonTenable("Je transmets au livreur"));
+  chk("un prix n'est pas une promesse", !promesseNonTenable("La Watch 6 est à 12 000 XAF"));
+  chk("un horaire n'est pas une promesse", !promesseNonTenable("On ouvre à 8h"));
+  chk("montrer n'est pas une promesse", !promesseNonTenable("Voici nos montres disponibles"));
+
+  chk("une promesse sans humain écarte TOUT",
+    v({ actions: [{ faire: "repondre", texte: "Je vérifie ta commande et je reviens vers toi" }], certitude: 0.99 }) === null);
+  chk("la même promesse passe si un humain prend le relais",
+    v({ actions: [
+      { faire: "repondre", texte: "Je transmets à l'équipe, on te répond ici" },
+      { faire: "humain" },
+    ], certitude: 0.99 }) !== null);
+
   chk("le rejet est consigné pour la trace",
     v({ actions: [{ faire: "vitrine" }, { faire: "repondre", texte: "7 jours" }], certitude: 0.9 })
       .raisonnement.includes("non ancré"));
