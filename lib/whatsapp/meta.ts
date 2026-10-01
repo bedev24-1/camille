@@ -101,6 +101,45 @@ export function sendImage(to: string, url: string, caption?: string): Promise<Me
   });
 }
 
+/**
+ * Une vidéo, par URL publique.
+ *
+ * Meta la télécharge lui-même : l'URL doit être joignable sans
+ * authentification, en `video/mp4` ou `video/3gp`, et sous 16 Mo. Un lien de
+ * partage Drive ou Dropbox ne marche pas — il renvoie une page HTML, pas la
+ * vidéo. C'est l'erreur la plus courante ici, alors on la nomme.
+ */
+export function sendVideo(to: string, url: string, caption?: string): Promise<MetaResult> {
+  return send(to, {
+    type: "video",
+    video: { link: url, ...(caption ? { caption: caption.slice(0, 1024) } : {}) },
+  });
+}
+
+/**
+ * LE composant natif de demande de position.
+ *
+ * Le client voit un bouton « Envoyer la position actuelle » : un appui, et
+ * WhatsApp joint ses coordonnées GPS. Sa réponse revient comme un message de
+ * type `location` ordinaire — donc rien de nouveau à décoder côté webhook.
+ *
+ * Ce que ça remplace : « Envoie-moi ta position (le trombone 📎 puis
+ * Position) ». Expliquer à un client où cliquer dans son application est un
+ * aveu que l'outil ne sait pas faire son travail — et la moitié des clients
+ * abandonnent ou répondent un nom de quartier approximatif, qui ne vaut rien
+ * pour un livreur.
+ */
+export function sendLocationRequest(to: string, body: string): Promise<MetaResult> {
+  return send(to, {
+    type: "interactive",
+    interactive: {
+      type: "location_request_message",
+      body: { text: body.slice(0, 1024) },
+      action: { name: "send_location" },
+    },
+  });
+}
+
 export function sendLocation(
   to: string, lat: number, lng: number, name?: string, address?: string
 ): Promise<MetaResult> {

@@ -129,6 +129,72 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   chk("resto : « je veux du poulet » reste une recherche", !veutToutVoir("je veux du poulet", true));
 }
 
+// ═══ lib/whatsapp/comprendre — la barrière entre le modèle et le client ═════
+{
+  const { phraseAncree, nombresDe, valider, faitsNumeriques } =
+    await import(`${DIST}/whatsapp/comprendre.js`);
+  groupe("comprendre — le modèle propose, le code vérifie");
+
+  eq("« 12 000 XAF » → 12000", nombresDe("12 000 XAF"), ["12000"]);
+  eq("« 8h30 - 18h »", nombresDe("8h30 - 18h"), ["8", "30", "18"]);
+  eq("aucun chiffre", nombresDe("bonjour, vous avez des montres ?"), []);
+
+  const PRODS = [
+    { id: "p1", name: "Oraimo Watch 6", price: 12000, currency: "XAF", category: "Montres", stock: 4 },
+    { id: "p2", name: "Oraimo FreePods", price: 9500, currency: "XAF", category: "Audio", stock: null },
+  ];
+  const FAITS = {
+    nom: "BUYTICLE", adresse: "Akwa, Douala", horaires: "8h - 18h",
+    fraisLivraison: 1000, livraison: true, devise: "XAF",
+  };
+  const ancres = faitsNumeriques(PRODS, FAITS, "j'en veux 3");
+
+  // Le cœur de CVA : un prix juste passe, un prix inventé ne sort jamais.
+  chk("le vrai prix passe", phraseAncree("La Watch 6 est à 12 000 XAF", ancres));
+  chk("un prix inventé est rejeté", !phraseAncree("La Watch 6 est à 15 000 XAF", ancres));
+  chk("les frais de livraison passent", phraseAncree("Livraison 1000 XAF", ancres));
+  // Un délai de livraison n'est pas un fait connu : c'est une promesse que
+  // personne n'a autorisée, et c'est la faute la plus coûteuse d'un agent.
+  chk("« livré en 2 jours » est rejeté", !phraseAncree("Livré en 2 jours", ancres));
+  chk("le stock réel passe", phraseAncree("Il en reste 4", ancres));
+  chk("un stock inventé est rejeté", !phraseAncree("Il en reste 12", ancres));
+  chk("le chiffre du client est autorisé", phraseAncree("Oui, 3 pièces c'est possible", ancres));
+  chk("sans chiffre, toujours ancré", phraseAncree("Oui on a ça en boutique", ancres));
+  chk("les horaires passent", phraseAncree("On ouvre à 8h et on ferme à 18h", ancres));
+
+  // valider() : la frontière. Rien d'inconnu ne franchit cette ligne.
+  const v = (o) => valider(o, PRODS, FAITS, "j'en veux 3");
+  eq("un produit inventé est jeté",
+    v({ actions: [{ faire: "montrer", produits: ["p9"] }], certitude: 0.9 }), null);
+  eq("les ids connus sont gardés",
+    v({ actions: [{ faire: "montrer", produits: ["p1", "p9", "p2"] }], certitude: 0.9 }).actions,
+    [{ faire: "montrer", produits: ["p1", "p2"] }]);
+  eq("un id répété ne l'est qu'une fois",
+    v({ actions: [{ faire: "montrer", produits: ["p1", "p1"] }], certitude: 0.9 }).actions,
+    [{ faire: "montrer", produits: ["p1"] }]);
+  eq("une action inconnue est ignorée",
+    v({ actions: [{ faire: "envoyer_facture" }], certitude: 0.9 }), null);
+  chk("une réponse avec prix inventé est retirée, pas corrigée",
+    v({ actions: [{ faire: "repondre", texte: "C'est 15 000 XAF" }], certitude: 0.9 }) === null);
+  chk("une réponse ancrée passe",
+    v({ actions: [{ faire: "repondre", texte: "C'est 12 000 XAF" }], certitude: 0.9 })
+      .actions[0].texte === "C'est 12 000 XAF");
+
+  // Plusieurs intentions dans un message : c'est tout l'intérêt.
+  const multi = v({
+    actions: [{ faire: "repondre", texte: "La Watch 6 est à 12 000 XAF" }, { faire: "montrer", produits: ["p1"] }],
+    certitude: 0.92,
+  });
+  eq("deux intentions sont conservées", multi.actions.length, 2);
+  eq("la certitude est bornée", v({ actions: [{ faire: "vitrine" }], certitude: 42 }).certitude, 1);
+  eq("une certitude absente vaut 0,5", v({ actions: [{ faire: "vitrine" }] }).certitude, 0.5);
+  eq("un retour vide ne vaut rien", v({ actions: [] }), null);
+  eq("un retour illisible ne vaut rien", v("oups"), null);
+  chk("le rejet est consigné pour la trace",
+    v({ actions: [{ faire: "vitrine" }, { faire: "repondre", texte: "7 jours" }], certitude: 0.9 })
+      .raisonnement.includes("non ancré"));
+}
+
 // ═══ lib/orders — les heures d'ouverture en texte libre ═════════════════════
 {
   const { closedNotice, lireHoraires, estOuvert } = await import(`${DIST}/horaires.js`);
