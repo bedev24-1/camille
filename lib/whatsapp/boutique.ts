@@ -60,6 +60,10 @@ import { tracer, sessionMeta, type Contexte } from "./handle";
 import { sansAccent, chercher, veutToutVoir } from "./recherche";
 import { lirePrix } from "./prix";
 import {
+  resumeMemoire, fusionnerNotes, faitsDesAchats, MAX_NOTES,
+  type Souvenir,
+} from "./memoire";
+import {
   comprendre, comprehensionDisponible,
   type Action, type FaitsCommerce,
 } from "./comprendre";
@@ -75,6 +79,7 @@ const B = {
   tuto: "cam:tuto",
   rode: "cam:rode",
   ok: "cam:ok",
+  encore: "cam:encore",
 } as const;
 
 /**
@@ -488,6 +493,66 @@ async function montrerOuNousSommes(ctx: Contexte) {
 
 // ── De l'intention comprise à l'action exécutée ─────────────────────────────
 
+/**
+ * Ce qu'on sait de ce client.
+ *
+ * Les ACHATS viennent de `camille.orders` : des faits, il a payé. Les NOTES
+ * viennent de `contacts.notes`, écrites par le modèle — donc des indices, pas
+ * des faits. La distinction est tenue jusque dans l'ancrage : seuls les
+ * montants réellement payés peuvent autoriser un nombre dans une réponse.
+ *
+ * Une base non migrée renvoie simplement une mémoire plus pauvre. Jamais une
+ * erreur : un client sans mémoire doit être servi comme avant.
+ */
+async function lireMemoire(agentId: string, phone: string): Promise<Souvenir> {
+  const vide: Souvenir = { achats: [], notes: [] };
+  const [cmd, ctc] = await Promise.all([
+    query(
+      `SELECT created_at, items, total FROM camille.orders
+        WHERE agent_id = $1
+          AND regexp_replace(COALESCE(contact_phone,''), '[^0-9]', '', 'g') = $2
+        ORDER BY created_at DESC LIMIT 5`,
+      [agentId, phone]
+    ).catch(() => ({ rows: [] })),
+    query(
+      `SELECT COALESCE(to_jsonb(c)->'notes', '[]'::jsonb) AS notes
+         FROM camille.contacts c WHERE agent_id = $1 AND phone = $2 LIMIT 1`,
+      [agentId, phone]
+    ).catch(() => ({ rows: [] })),
+  ]);
+
+  vide.achats = (cmd.rows as Record<string, unknown>[]).map((r) => {
+    const items = Array.isArray(r.items) ? r.items : [];
+    return {
+      quand: new Date(r.created_at as string).toISOString(),
+      articles: items.map((i) => String((i as { name?: string }).name || "")).filter(Boolean),
+      total: r.total != null ? Number(r.total) : null,
+    };
+  });
+  const n = ctc.rows[0]?.notes;
+  vide.notes = Array.isArray(n) ? n.map(String).slice(0, MAX_NOTES) : [];
+  return vide;
+}
+
+/** Retenir un goût. L'absence de la colonne ne doit rien casser. */
+async function retenirNotes(agentId: string, phone: string, anciennes: string[], neuves: string[]) {
+  if (!neuves.length) return;
+  const fusion = fusionnerNotes(anciennes, neuves);
+  try {
+    await query(
+      `INSERT INTO camille.contacts (agent_id, phone, notes, created_at, updated_at)
+       VALUES ($1, $2, $3::jsonb, NOW(), NOW())
+       ON CONFLICT (agent_id, phone)
+       DO UPDATE SET notes = $3::jsonb, updated_at = NOW()`,
+      [agentId, phone, JSON.stringify(fusion)]
+    );
+  } catch (e) {
+    // 42703 : migration_memoire_client.sql pas appliquée. La conversation
+    // continue, la mémoire des goûts est juste perdue d'une fois sur l'autre.
+    console.error("[boutique] goûts non retenus :", (e as Error).message);
+  }
+}
+
 /** Les derniers tours, pour que « et en bleu ? » veuille dire quelque chose. */
 async function derniersTours(agentId: string, phone: string) {
   try {
@@ -515,20 +580,31 @@ async function derniersTours(agentId: string, phone: string) {
  * avant de montrer les articles, c'est l'ordre dans lequel un vendeur parle.
  */
 async function executer(
-  ctx: Contexte, actions: Action[], prods: Produit[], resto: boolean, nouveau: boolean
+  ctx: Contexte, actions: Action[], prods: Produit[], resto: boolean, nouveau: boolean,
+  souvenir: Souvenir = { achats: [], notes: [] }
 ): Promise<void> {
   const { agent, phone } = ctx;
   const parId = new Map(prods.map((p) => [p.id, p]));
-  // `montrer` passe avant `vitrine`, sinon la vitrine part la première et le
-  // garde-fou plus bas ne sert à rien.
-  const ordre = { repondre: 0, infos: 1, montrer: 2, vitrine: 3 } as Record<string, number>;
-  const triees = [...actions].sort((a, b) => (ordre[a.faire] ?? 4) - (ordre[b.faire] ?? 4));
+  // L'ORDRE COMPTE, et il a été faux. `mode_emploi` était exécuté en dernier :
+  // à « comment commander ? », le client recevait une phrase générique, puis
+  // le carrousel, PUIS la vidéo — et le carrousel une seconde fois, puisque
+  // `envoyerTuto` finit déjà sur la vitrine. Trois messages pour une question,
+  // dans le mauvais ordre, avec un doublon.
+  //
+  // `mode_emploi` répond à la question : il passe donc devant, et il ABSORBE
+  // tout ce qui montre des articles — la vidéo explique et enchaîne elle-même
+  // sur la vitrine. Ce qui alerte l'équipe, lui, n'est jamais absorbé.
+  const ordre = { mode_emploi: 0, repondre: 1, infos: 2, montrer: 3, vitrine: 4 } as Record<string, number>;
+  const triees = [...actions].sort((a, b) => (ordre[a.faire] ?? 5) - (ordre[b.faire] ?? 5));
+  const ABSORBEES = new Set(["repondre", "montrer", "vitrine", "accueil"]);
+  const tuto = triees.some((a) => a.faire === "mode_emploi");
 
   // Une seule vitrine, une seule prise de main : le modèle peut répéter une
   // intention, le client ne doit pas recevoir deux fois la même chose.
   const faits = new Set<string>();
 
   for (const a of triees) {
+    if (tuto && ABSORBEES.has(a.faire)) continue;
     if (a.faire !== "repondre" && faits.has(a.faire)) continue;
     faits.add(a.faire);
 
@@ -581,20 +657,7 @@ async function executer(
 
       case "accueil":
         if (nouveau) await accueillir(ctx, resto);
-        else {
-          const profil = sectorProfile(agent.sector);
-          await meta.sendButtons(
-            phone,
-            (profil.welcome || "Bonjour 👋").replace(/\{b\}/g, agent.business_name || "nous"),
-            [
-              { id: B.catalogue, title: resto ? "Voir la carte" : "Voir la boutique" },
-              { id: B.infos, title: "Infos & horaires" },
-              { id: B.conseiller, title: "Un conseiller" },
-            ],
-            agent.business_name || undefined
-          );
-          await tracer(agent.id, phone, "assistant", "[accueil]");
-        }
+        else await revoir(ctx, resto, souvenir);
         break;
 
       default: {
@@ -616,6 +679,51 @@ async function executer(
   if (nouveau && !faits.has("accueil") && !faits.has("mode_emploi") && !faits.has("humain")) {
     await orienterNouveau(ctx, resto);
   }
+}
+
+/**
+ * Retrouver un habitué.
+ *
+ * Toute la mémoire se joue ici, en UN bouton. « Comme la dernière fois »
+ * renvoie exactement ce qu'il avait acheté — c'est le geste du vendeur du
+ * quartier, et c'est utile.
+ *
+ * Ce qu'on ne fait PAS, volontairement : lui réciter son historique. « Je vois
+ * que tu as commandé une Watch 6 il y a trois jours » met mal à l'aise et
+ * n'aide à rien. La mémoire se montre par ce qu'elle PERMET, pas par ce
+ * qu'elle sait.
+ *
+ * Le bouton n'apparaît que si l'article est encore au catalogue : proposer de
+ * racheter un article disparu serait pire que de ne rien proposer.
+ */
+async function revoir(ctx: Contexte, resto: boolean, souvenir: Souvenir) {
+  const { agent, phone } = ctx;
+  const profil = sectorProfile(agent.sector);
+  const accueil = (profil.welcome || "Bonjour 👋").replace(/\{b\}/g, agent.business_name || "nous");
+
+  const dejaVu = await repasser(agent.id, souvenir);
+  await meta.sendButtons(
+    phone,
+    accueil,
+    [
+      ...(dejaVu.length ? [{ id: B.encore, title: resto ? "Comme d'habitude" : "Comme la dernière fois" }] : []),
+      { id: B.catalogue, title: resto ? "Voir la carte" : "Voir la boutique" },
+      ...(dejaVu.length ? [] : [{ id: B.infos, title: "Infos & horaires" }]),
+      { id: B.conseiller, title: "Un conseiller" },
+    ],
+    agent.business_name || undefined
+  );
+  await tracer(agent.id, phone, "assistant", dejaVu.length ? "[retour client]" : "[accueil]");
+}
+
+/** Ce qu'il avait acheté, et qui est encore vendable aujourd'hui. */
+async function repasser(agentId: string, souvenir: Souvenir): Promise<Produit[]> {
+  const noms = new Set(
+    souvenir.achats.flatMap((a) => a.articles).map((n) => sansAccent(n)).filter(Boolean)
+  );
+  if (!noms.size) return [];
+  const prods = await catalogue(agentId);
+  return prods.filter((p) => noms.has(sansAccent(p.name))).slice(0, 10);
 }
 
 /** L'orientation du nouveau venu, greffée après sa vraie réponse. */
@@ -733,6 +841,19 @@ export async function repondreBoutique(
       );
       return;
     }
+    if (id === B.encore) {
+      const dejaVu = await repasser(agent.id, await lireMemoire(agent.id, phone));
+      if (!dejaVu.length) {
+        // L'article n'est plus au catalogue : on le dit, et on montre la suite.
+        const prods = await catalogue(agent.id);
+        return montrerVitrine(
+          ctx, prods,
+          resto ? "Notre carte" : "Notre boutique",
+          "Ce que tu avais pris n'est plus dispo 😕 Voilà ce qu'on a en ce moment 🛍️"
+        );
+      }
+      return montrerVitrine(ctx, dejaVu, "", "Voilà ce que tu avais pris 👇");
+    }
     if (id === B.livrer) return demanderPosition(ctx);
     if (id === B.retirer) {
       await meta.sendText(phone, "C'est noté, on te garde ça 👌");
@@ -761,7 +882,9 @@ export async function repondreBoutique(
   // déterministe un peu sèche vaut mieux qu'une réponse confiante à côté.
   // ─────────────────────────────────────────────────────────────────────────
   if (msg.text.trim() && comprehensionDisponible()) {
-    const [prods, nouveau] = await Promise.all([catalogue(agent.id), estNouveau(agent.id, phone)]);
+    const [prods, nouveau, souvenir] = await Promise.all([
+      catalogue(agent.id), estNouveau(agent.id, phone), lireMemoire(agent.id, phone),
+    ]);
     const c = await comprendre(
       msg.text,
       prods.map((p) => ({
@@ -770,14 +893,18 @@ export async function repondreBoutique(
       })),
       faitsDe(agent),
       resto,
-      await derniersTours(agent.id, phone)
+      await derniersTours(agent.id, phone),
+      { resume: resumeMemoire(souvenir), ancres: faitsDesAchats(souvenir) }
     );
     if (c && c.certitude >= 0.55) {
       await tracer(
         agent.id, phone, "system",
         `[compris ${c.certitude.toFixed(2)}] ${c.actions.map((a) => a.faire).join("+")} — ${c.raisonnement}`
       );
-      return executer(ctx, c.actions, prods, resto, nouveau);
+      // Les goûts appris dans ce message, pour la prochaine conversation.
+      // En arrière-plan : le client n'a pas à attendre une écriture en base.
+      retenirNotes(agent.id, phone, souvenir.notes, c.notes).catch(() => {});
+      return executer(ctx, c.actions, prods, resto, nouveau, souvenir);
     }
     if (c) {
       console.log(`[boutique] certitude ${c.certitude} trop basse — repli déterministe`);

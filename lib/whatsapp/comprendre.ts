@@ -25,6 +25,8 @@
 // précaution théorique : le compte Groq est à sec aujourd'hui.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { validerNotes } from "./memoire";
+
 /** Ce que le code sait exécuter. Rien d'autre n'est acceptable en retour. */
 export type Action =
   | { faire: "vitrine" }
@@ -44,6 +46,8 @@ export type Comprehension = {
   certitude: number;
   /** Pourquoi — enregistré dans conversation_traces, jamais montré au client. */
   raisonnement: string;
+  /** Les goûts du client à retenir pour la prochaine fois. Jamais des faits. */
+  notes: string[];
   source: "modele" | "repli";
 };
 
@@ -162,13 +166,18 @@ export function faitsNumeriques(
  * client, donc c'est elle qu'il faut pouvoir éprouver sans appeler personne.
  */
 export function valider(
-  brut: unknown, prods: ProduitConnu[], faits: FaitsCommerce, messageClient: string
+  brut: unknown,
+  prods: ProduitConnu[],
+  faits: FaitsCommerce,
+  messageClient: string,
+  /** Les prix réellement payés par ce client : des faits, donc ils ancrent. */
+  ancresEnPlus: string[] = []
 ): Comprehension | null {
   if (!brut || typeof brut !== "object") return null;
   const o = brut as Record<string, unknown>;
 
   const connus = new Set(prods.map((p) => p.id));
-  const ancres = faitsNumeriques(prods, faits, messageClient);
+  const ancres = [...faitsNumeriques(prods, faits, messageClient), ...ancresEnPlus];
   const actions: Action[] = [];
   const rejets: string[] = [];
   let promesse = false;
@@ -237,6 +246,7 @@ export function valider(
     raisonnement:
       String(o.raisonnement || "").slice(0, 500) +
       (rejets.length ? ` | rejeté: ${rejets.join(" ; ")}` : ""),
+    notes: validerNotes(o.memoire),
     source: "modele",
   };
 }
@@ -266,7 +276,9 @@ export function comprehensionDisponible(): boolean {
   return Boolean(CLE);
 }
 
-function consigne(prods: ProduitConnu[], faits: FaitsCommerce, resto: boolean): string {
+function consigne(
+  prods: ProduitConnu[], faits: FaitsCommerce, resto: boolean, memoire: string
+): string {
   const liste = prods
     .slice(0, 60)
     .map(
@@ -314,8 +326,19 @@ Livraison : ${
 
 CATALOGUE — id | nom | catégorie | prix
 ${liste || "(vide)"}
+${
+    memoire
+      ? `
+CE CLIENT — ce qu'on sait déjà de lui
+${memoire}
 
-Réponds en JSON seul : {"actions":[...],"certitude":0.0,"raisonnement":"..."}`;
+LA DISCRÉTION EST UNE RÈGLE. Ne lui parle de son passé QUE si ça sert sa demande du moment : « la même chose que la dernière fois ? » quand il hésite, oui. « Je vois que tu as déjà commandé… » à chaque message, jamais — c'est étouffant, et un client étouffé s'en va. S'il ne demande rien, tu ne proposes rien.`
+      : ""
+  }
+
+MÉMOIRE — tu peux ajouter "memoire":["..."] : un ou deux GOÛTS DURABLES appris dans ce message (« préfère le noir », « achète pour sa fille », « petit budget »). Pas d'événement, pas de compte rendu, rien sur la commande en cours. Rien à retenir → n'écris pas le champ.
+
+Réponds en JSON seul : {"actions":[...],"certitude":0.0,"raisonnement":"...","memoire":[]}`;
 }
 
 /**
@@ -331,7 +354,9 @@ export async function comprendre(
   prods: ProduitConnu[],
   faits: FaitsCommerce,
   resto: boolean,
-  historique: { role: string; content: string }[] = []
+  historique: { role: string; content: string }[] = [],
+  /** Ce qu'on sait de ce client : le résumé pour le modèle, et ses ancres. */
+  memoire: { resume: string; ancres: string[] } = { resume: "", ancres: [] }
 ): Promise<Comprehension | null> {
   if (!CLE || !message.trim()) return null;
 
@@ -340,7 +365,7 @@ export async function comprendre(
     max_tokens: 500,
     response_format: { type: "json_object" as const },
     messages: [
-      { role: "system", content: consigne(prods, faits, resto) },
+      { role: "system", content: consigne(prods, faits, resto, memoire.resume) },
       ...historique.slice(-6).map((h) => ({
         role: h.role === "assistant" ? "assistant" : "user",
         content: String(h.content).slice(0, 500),
@@ -373,7 +398,7 @@ export async function comprendre(
       const d = await r.json();
       const brut = d?.choices?.[0]?.message?.content;
       if (!brut) continue;
-      const c = valider(JSON.parse(brut), prods, faits, message);
+      const c = valider(JSON.parse(brut), prods, faits, message, memoire.ancres);
       // Un retour illisible ou entièrement rejeté : le modèle suivant peut
       // mieux faire. Mais on ne tente pas éternellement — le client attend.
       if (!c) continue;

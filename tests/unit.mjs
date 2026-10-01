@@ -258,6 +258,59 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   eq("sans chiffre → null", lirePrix("sur devis"), null);
 }
 
+// ═══ lib/whatsapp/memoire — se souvenir sans étouffer ══════════════════════
+{
+  const { resumeMemoire, fusionnerNotes, validerNotes, faitsDesAchats, MAX_NOTES } =
+    await import(`${DIST}/whatsapp/memoire.js`);
+  groupe("memoire — ce qu'elle permet, pas ce qu'elle sait");
+
+  const j = (n) => new Date(Date.UTC(2026, 9, 1) - n * 86400000).toISOString();
+  const S = {
+    achats: [
+      { quand: j(1), articles: ["Oraimo Watch 6 - Premium"], total: 9000 },
+      { quand: j(40), articles: ["Oraimo FreePods"], total: 8000 },
+    ],
+    notes: ["préfère le noir"],
+  };
+  const now = new Date(Date.UTC(2026, 9, 1));
+
+  chk("« hier » plutôt qu'une date", resumeMemoire(S, now).includes("hier"));
+  chk("un mois est arrondi", resumeMemoire(S, now).includes("il y a 1 mois"));
+  chk("les goûts sont là", resumeMemoire(S, now).includes("préfère le noir"));
+  // Deux achats au plus : une mémoire longue dilue la demande du moment, et
+  // mange le budget de jetons — 8000 par minute sur l'offre gratuite.
+  chk("deux achats au plus",
+    resumeMemoire({ achats: [...S.achats, { quand: j(2), articles: ["X"], total: 1 }], notes: [] }, now)
+      .split("\n").filter((l) => l.startsWith("A acheté")).length === 2);
+  // Vide quand il n'y a rien : envoyer « aucun historique » invite le modèle
+  // à en parler, ce qui est exactement ce qu'on ne veut pas.
+  eq("mémoire vide → chaîne vide", resumeMemoire({ achats: [], notes: [] }, now), "");
+
+  // LA PROPRIÉTÉ QUI COMPTE : une note vient du modèle, donc elle n'ancre
+  // RIEN. Sinon une note inventée blanchirait un prix inventé au tour suivant.
+  eq("seuls les montants payés ancrent", faitsDesAchats(S), ["9000", "8000"]);
+  chk("les goûts n'ancrent pas",
+    !JSON.stringify(faitsDesAchats({ achats: [], notes: ["budget 50000"] })).includes("50000"));
+
+  eq("un goût répété ne s'empile pas",
+    fusionnerNotes(["Préfère le noir"], ["prefere le NOIR"]), ["prefere le NOIR"]);
+  eq("le neuf passe devant", fusionnerNotes(["a"], ["b"]), ["b", "a"]);
+  // Observé au premier essai sur le vrai modèle : « préfère le bleu » venait
+  // s'ajouter à « préfère le noir », et le modèle recevait deux consignes
+  // contradictoires. Un goût qui change doit chasser l'ancien.
+  eq("un goût qui change chasse l'ancien",
+    fusionnerNotes(["préfère le noir"], ["préfère le bleu"]), ["préfère le bleu"]);
+  eq("deux goûts distincts cohabitent",
+    fusionnerNotes(["petit budget"], ["préfère le noir"]), ["préfère le noir", "petit budget"]);
+  chk("la mémoire est plafonnée",
+    fusionnerNotes(Array.from({ length: 20 }, (_, i) => `n${i}`), ["x"]).length === MAX_NOTES);
+
+  eq("un événement n'est pas un goût", validerNotes(["a commandé 2 montres aujourd'hui"]), []);
+  eq("une politesse n'est pas un goût", validerNotes(["merci beaucoup"]), []);
+  eq("un vrai goût est gardé", validerNotes(["achète pour sa fille"]), ["achète pour sa fille"]);
+  eq("pas un tableau → rien", validerNotes("noir"), []);
+}
+
 // ═══ lib/orders — les heures d'ouverture en texte libre ═════════════════════
 {
   const { closedNotice, lireHoraires, estOuvert } = await import(`${DIST}/horaires.js`);
