@@ -49,13 +49,25 @@ async function post(path: string, body: unknown): Promise<MetaResult> {
     try { json = txt ? JSON.parse(txt) : {}; } catch { /* Meta a renvoyé autre chose que du JSON */ }
 
     if (!res.ok) {
-      const err = (json.error || {}) as { message?: string; code?: number; error_subcode?: number };
+      const err = (json.error || {}) as {
+        message?: string; code?: number; error_subcode?: number;
+        error_user_msg?: string; error_data?: { details?: string };
+      };
+      // `error_data.details` est INDISPENSABLE : c'est le seul endroit où Meta
+      // nomme ce qui cloche — « product not found for product_retailer_id,
+      // m4castvg8j ». Le `message` seul se contente de « Parameter value is not
+      // valid », sur quoi aucun repli ne peut raisonner. On l'avait omis, et
+      // sendCarouselRobuste ne pouvait donc jamais identifier la fiche fautive.
+      const bouts = [
+        err.message,
+        err.code != null ? `(code ${err.code}${err.error_subcode ? `/${err.error_subcode}` : ""})` : "",
+        err.error_data?.details,
+        err.error_user_msg,
+      ].filter(Boolean);
       return {
         ok: false,
         status: res.status,
-        error: err.message
-          ? `${err.message} (code ${err.code ?? "?"}${err.error_subcode ? `/${err.error_subcode}` : ""})`
-          : txt.slice(0, 300),
+        error: bouts.length ? bouts.join(" — ") : txt.slice(0, 300),
       };
     }
     const msgs = json.messages as { id?: string }[] | undefined;
