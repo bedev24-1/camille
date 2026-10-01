@@ -413,6 +413,38 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   eq("le lien pointe le bon produit", sien[1].camilleId, "u2");
 }
 
+// ═══ repetition — l'étouffement par carrousel ══════════════════════════════
+{
+  const { aRenvoyer, noterEnvoi, oublierTout, signature, FENETRE_MS } =
+    await import(`${DIST}/whatsapp/repetition.js`);
+  groupe("repetition — ne pas renvoyer ce qu'il a sous les yeux");
+
+  // Observé : le même carrousel de cinq articles parti QUATRE fois dans une
+  // seule conversation. Le client remonte son fil et voit quatre fois les
+  // mêmes montres. Chaque envoi était justifié isolément ; l'ensemble étouffe.
+  oublierTout();
+  const CAT = ["p1", "p2", "p3", "p4", "p5"];
+  const t = 1_000_000;
+
+  chk("jamais vue → on envoie", aRenvoyer("a|1", CAT, t));
+  noterEnvoi("a|1", CAT, t);
+  chk("tout de suite après → on n'envoie PAS", !aRenvoyer("a|1", CAT, t + 1000));
+  chk("deux minutes après → toujours pas", !aRenvoyer("a|1", CAT, t + 120_000));
+  chk("passé la fenêtre → on renvoie", aRenvoyer("a|1", CAT, t + FENETRE_MS + 1));
+
+  // Un catalogue qui a changé est une information NEUVE : nouveau produit,
+  // rupture de stock. On ne la retient pas.
+  chk("un produit en plus → on renvoie", aRenvoyer("a|1", [...CAT, "p6"], t + 1000));
+  chk("un produit en moins → on renvoie", aRenvoyer("a|1", CAT.slice(1), t + 1000));
+  // L'ordre, lui, ne compte pas : c'est le même contenu.
+  chk("l'ordre ne change rien", !aRenvoyer("a|1", [...CAT].reverse(), t + 1000));
+  eq("la signature est triée", signature(["b", "a"]), signature(["a", "b"]));
+
+  // Chaque client a son propre fil.
+  chk("un autre client reçoit la sienne", aRenvoyer("a|2", CAT, t + 1000));
+  chk("un autre commerce aussi", aRenvoyer("b|1", CAT, t + 1000));
+}
+
 // ═══ lib/orders — les heures d'ouverture en texte libre ═════════════════════
 {
   const { closedNotice, lireHoraires, estOuvert } = await import(`${DIST}/horaires.js`);

@@ -59,6 +59,7 @@ import * as meta from "./meta";
 import { tracer, sessionMeta, type Contexte } from "./handle";
 import { sansAccent, chercher, veutToutVoir } from "./recherche";
 import { lirePrix } from "./prix";
+import { aRenvoyer, noterEnvoi } from "./repetition";
 import {
   resumeMemoire, fusionnerNotes, faitsDesAchats, MAX_NOTES,
   type Souvenir,
@@ -90,9 +91,11 @@ const B = {
  * jamais muet sur une promesse qu'on vient de faire au client.
  */
 // Une vidéo de démonstration publique, pour éprouver le mécanisme avant d'avoir
-// filmé la vraie : 15 s, 11,9 Mo, vrai video/mp4, joignable sans compte.
-// Vérifiée : la même source en 30 s fait 21,6 Mo et Meta la REFUSE (limite 16 Mo).
-const TUTO_DEMO = "https://download.samplelib.com/mp4/sample-15s.mp4";
+// filmé la vraie : 5 s, 2,8 Mo, vrai video/mp4, joignable sans compte.
+// Mesuré sur la même source : 15 s = 11,9 Mo, et 30 s = 21,6 Mo, que Meta
+// REFUSE (limite 16 Mo). On prend la plus légère — c'est elle qui se téléverse
+// le plus vite au premier appel, et le poids ne sert à rien ici.
+const TUTO_DEMO = "https://download.samplelib.com/mp4/sample-5s.mp4";
 const TUTO_URL = process.env.TUTO_VIDEO_URL || TUTO_DEMO;
 
 export type Produit = {
@@ -207,8 +210,30 @@ async function catalogue(agentId: string): Promise<Produit[]> {
  * porte le prix et le bouton « ajouter au panier ». Le texte passe donc dans
  * le corps, et c'est le seul endroit où l'on parle.
  */
-async function montrerVitrine(ctx: Contexte, prods: Produit[], entete: string, corps: string) {
+async function montrerVitrine(
+  ctx: Contexte, prods: Produit[], entete: string, corps: string,
+  /**
+   * `true` quand c'est TOUT le catalogue. Un client ne doit pas recevoir
+   * quatre fois le même carrousel de cinq articles dans une conversation —
+   * observé, et c'est un étouffement : il remonte son fil et voit quatre fois
+   * les mêmes montres. Une sélection ciblée, elle, part toujours : c'est une
+   * réponse à sa demande, pas une répétition.
+   */
+  complete = false
+) {
   const { phone } = ctx;
+
+  if (complete && !aRenvoyer(`${ctx.agent.id}|${phone}`, prods.map((p) => p.id))) {
+    await meta.sendText(
+      phone,
+      corps
+        ? `${corps}\n\n_C'est juste au-dessus 👆 — remonte un peu, ou dis-moi ce que tu cherches._`
+        : "C'est juste au-dessus 👆 Remonte un peu, ou dis-moi ce que tu cherches 🙂"
+    );
+    await tracer(ctx.agent.id, phone, "assistant", "[vitrine déjà envoyée]");
+    return;
+  }
+  if (complete) noterEnvoi(`${ctx.agent.id}|${phone}`, prods.map((p) => p.id));
 
   if (!prods.length) {
     await meta.sendText(phone, "Je n'ai rien à te montrer pour le moment 😔 Réécris-moi un peu plus tard.");
@@ -362,7 +387,7 @@ async function envoyerTuto(ctx: Contexte, resto: boolean) {
   if (TUTO_URL === TUTO_DEMO) {
     console.warn("[boutique] TUTO_VIDEO_URL absente — vidéo de démonstration envoyée");
   }
-  const r = await meta.sendVideo(phone, TUTO_URL, legende);
+  const r = await meta.sendVideoRapide(phone, TUTO_URL, legende);
   if (!r.ok) {
     // Meta n'a pas pu récupérer la vidéo : on tient quand même la promesse
     // qu'on vient de faire au client, en texte. Les trois étapes sont là.
@@ -376,7 +401,9 @@ async function envoyerTuto(ctx: Contexte, resto: boolean) {
     ctx, prods,
     resto ? "Notre carte" : "Notre boutique",
     resto ? "On commence ? Voilà notre carte 🍽️" : "On essaie ? Voilà ce qu'on a 🛍️"
-  );
+  ,
+  true
+);
 }
 
 /** Le panier natif reçu : on enregistre la commande, puis on demande où livrer. */
@@ -634,7 +661,9 @@ async function executer(
           ctx, prods,
           resto ? "Notre carte" : "Notre boutique",
           resto ? "Voici ce qu'on propose 🍽️" : "Voici ce qu'on a en ce moment 🛍️"
-        );
+        ,
+        true
+      );
         break;
 
       case "mode_emploi": await envoyerTuto(ctx, resto); break;
@@ -817,7 +846,9 @@ export async function repondreBoutique(
         ctx, prods,
         resto ? "Notre carte" : "Notre boutique",
         resto ? "Voici ce qu'on propose 🍽️" : "Voici ce qu'on a en ce moment 🛍️"
-      );
+      ,
+      true
+    );
     }
     if (id === B.conseiller) return passerLaMain(ctx);
     if (id === B.tuto) return envoyerTuto(ctx, resto);
@@ -827,7 +858,9 @@ export async function repondreBoutique(
         ctx, prods,
         resto ? "Notre carte" : "Notre boutique",
         resto ? "Parfait, voilà notre carte 🍽️" : "Parfait, voilà ce qu'on a 🛍️"
-      );
+      ,
+      true
+    );
     }
     // « Ça va, merci » : il a déjà sa réponse sous les yeux. Lui renvoyer le
     // catalogue ferait DEUX carrousels identiques à la suite — c'est ce qui
@@ -850,7 +883,9 @@ export async function repondreBoutique(
           ctx, prods,
           resto ? "Notre carte" : "Notre boutique",
           "Ce que tu avais pris n'est plus dispo 😕 Voilà ce qu'on a en ce moment 🛍️"
-        );
+        ,
+        true
+      );
       }
       return montrerVitrine(ctx, dejaVu, "", "Voilà ce que tu avais pris 👇");
     }
@@ -941,7 +976,9 @@ export async function repondreBoutique(
       ctx, prods,
       resto ? "Notre carte" : "Notre boutique",
       resto ? "Voici ce qu'on propose 🍽️" : "Voici ce qu'on a en ce moment 🛍️"
-    );
+    ,
+    true
+  );
   }
 
   // 10. Une recherche nommée : « la montre oraimo », « les freepods ».
@@ -965,7 +1002,9 @@ export async function repondreBoutique(
         resto
           ? "Je n'ai pas trouvé ça 🤔 Voilà ce qu'on propose 🍽️"
           : "Je n'ai pas trouvé exactement ça 🤔 Voilà ce qu'on a en ce moment 🛍️"
-      );
+      ,
+      true
+    );
     }
   }
 

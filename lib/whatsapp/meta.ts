@@ -116,6 +116,82 @@ export function sendVideo(to: string, url: string, caption?: string): Promise<Me
   });
 }
 
+// ── Téléverser une fois, envoyer mille fois ─────────────────────────────────
+//
+// Envoyer une vidéo par `link` oblige Meta à la TÉLÉCHARGER à chaque envoi.
+// Pour un fichier de 12 Mo, ça prend plusieurs secondes — et pendant ce
+// temps-là les messages suivants partent et ARRIVENT AVANT ELLE. Observé sur
+// le numéro Buyticle : le client a reçu le carrousel, puis la vidéo du mode
+// d'emploi, dans cet ordre. L'explication arrivait après la démonstration.
+//
+// Téléversée une fois, la vidéo a un identifiant, et l'envoi devient
+// instantané. Les identifiants Meta vivent 30 jours : on les garde 20, de quoi
+// servir des milliers de clients avec un seul téléchargement.
+
+const MEDIAS = new Map<string, { id: string; expire: number }>();
+const MEDIA_TTL = 20 * 24 * 3600 * 1000;
+
+/** L'identifiant Meta de ce média, téléversé au besoin. `null` si impossible. */
+export async function mediaId(url: string, type = "video/mp4"): Promise<string | null> {
+  const garde = MEDIAS.get(url);
+  if (garde && garde.expire > Date.now()) return garde.id;
+  if (!TOKEN || !PHONE_ID) return null;
+
+  try {
+    const src = await fetch(url);
+    if (!src.ok) {
+      console.error(`[meta] média injoignable (${src.status}) : ${url}`);
+      return null;
+    }
+    const octets = await src.arrayBuffer();
+    // Meta refuse au-delà de 16 Mo : autant le dire ici plutôt que de laisser
+    // l'API répondre une erreur générique.
+    if (octets.byteLength > 16 * 1024 * 1024) {
+      console.error(`[meta] média trop lourd (${Math.round(octets.byteLength / 1048576)} Mo, max 16) : ${url}`);
+      return null;
+    }
+
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("type", type);
+    form.append("file", new Blob([octets], { type }), url.split("/").pop() || "media.mp4");
+
+    const res = await fetch(`https://graph.facebook.com/${GRAPH}/${PHONE_ID}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: form,
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.id) {
+      console.error("[meta] téléversement refusé :", JSON.stringify(j).slice(0, 300));
+      return null;
+    }
+    MEDIAS.set(url, { id: String(j.id), expire: Date.now() + MEDIA_TTL });
+    console.log(`[meta] vidéo téléversée une fois (${Math.round(octets.byteLength / 1048576)} Mo) → id ${j.id}`);
+    return String(j.id);
+  } catch (e) {
+    console.error("[meta] téléversement impossible :", (e as Error).message);
+    return null;
+  }
+}
+
+/**
+ * Une vidéo, par identifiant si possible — donc instantanée et dans l'ordre.
+ *
+ * Le repli par `link` reste : mieux vaut une vidéo qui arrive en retard que
+ * pas de vidéo du tout.
+ */
+export async function sendVideoRapide(
+  to: string, url: string, caption?: string
+): Promise<MetaResult> {
+  const id = await mediaId(url);
+  if (!id) return sendVideo(to, url, caption);
+  return send(to, {
+    type: "video",
+    video: { id, ...(caption ? { caption: caption.slice(0, 1024) } : {}) },
+  });
+}
+
 /**
  * LE composant natif de demande de position.
  *
