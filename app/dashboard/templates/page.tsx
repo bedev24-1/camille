@@ -73,6 +73,8 @@ export default function TemplatesPage() {
   const [examples, setExamples] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [aSupprimer, setASupprimer] = useState<string>("");
+  const [note, setNote] = useState("");
 
   const load = useCallback(async () => {
     setErr("");
@@ -117,6 +119,25 @@ export default function TemplatesPage() {
       await load();
     } catch (e) {
       setMsg((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function supprimer(nom: string) {
+    setBusy(true); setNote("");
+    try {
+      const r = await fetch(`/api/whatsapp/templates?name=${encodeURIComponent(nom)}`, {
+        method: "DELETE",
+        headers: { ...authHeaders() },
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) { setNote(d.error || "Suppression refusée"); return; }
+      setNote(d.avertissement || `« ${nom} » supprimé.`);
+      setASupprimer("");
+      await load();
+    } catch (e) {
+      setNote((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -172,11 +193,51 @@ export default function TemplatesPage() {
                     borderRadius: 999, background: e.fond, color: e.encre }}>
                     {e.texte}
                   </span>
+
+                  {aSupprimer === t.name ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
+                      <button onClick={() => supprimer(t.name)} disabled={busy}
+                        style={{ padding: "6px 11px", borderRadius: 999, border: "none", background: "#A63D28",
+                          color: "#fff", fontSize: 12, fontWeight: 700, cursor: busy ? "default" : "pointer" }}>
+                        {busy ? "…" : "Confirmer"}
+                      </button>
+                      <button onClick={() => setASupprimer("")}
+                        style={{ padding: "6px 11px", borderRadius: 999, background: "transparent",
+                          border: "1px solid var(--cl-line)", color: "var(--cl-sub)", fontSize: 12, cursor: "pointer" }}>
+                        Annuler
+                      </button>
+                    </div>
+                  ) : (
+                    <button onClick={() => { setASupprimer(t.name); setNote(""); }}
+                      title="Supprimer ce modèle"
+                      style={{ flexShrink: 0, padding: "5px 10px", borderRadius: 999, background: "transparent",
+                        border: "1px solid var(--cl-line)", color: "var(--cl-sub)", fontSize: 12, cursor: "pointer" }}>
+                      Supprimer
+                    </button>
+                  )}
                 </div>
               );
             })}
           </div>
         )}
+
+        {/* La seule conséquence irréversible de la suppression, dite avant. */}
+        {aSupprimer ? (
+          <div style={{ marginTop: 11, padding: "11px 13px", borderRadius: 10, fontSize: 13, lineHeight: 1.5,
+            background: "#FDF1DC", border: "1px solid #F0D9A8", color: "#6B4500" }}>
+            Supprimer <strong>{aSupprimer}</strong> ? Les messages déjà envoyés ne changent pas, mais{" "}
+            <strong>Meta garde ce nom bloqué longtemps</strong> — bien au-delà de la minute qu&apos;il
+            annonce. Pour réécrire ce message plus tard, il faudra lui donner un autre nom.
+          </div>
+        ) : null}
+
+        {note ? (
+          <div style={{ marginTop: 11, padding: "10px 12px", borderRadius: 9, fontSize: 13, lineHeight: 1.5,
+            background: note.includes("supprimé") ? "#E7F8F0" : "#F7E8E4",
+            border: `1px solid ${note.includes("supprimé") ? "#1B6E51" : "#A63D28"}` }}>
+            {note}
+          </div>
+        ) : null}
       </div>
 
       {/* ── Création ──────────────────────────────────────────────────────── */}

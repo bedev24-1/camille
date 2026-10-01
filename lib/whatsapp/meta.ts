@@ -455,6 +455,44 @@ export async function createTemplate(
   }
 }
 
+/**
+ * Supprime un modèle.
+ *
+ * ⚠️ Meta garde le NOM bloqué longtemps après la suppression — bien au-delà de
+ * la « minute » que son message d'erreur annonce. Toute tentative de recréer le
+ * même nom échoue alors sur « le nouveau contenu ne peut pas être ajouté
+ * lorsque le contenu existant est en cours de suppression », un message qui
+ * parle de langue alors qu'il s'agit du nom. Vérifié : un nom neuf dans la même
+ * langue passe sans problème au même instant.
+ *
+ * C'est pour ça que l'interface prévient avant de supprimer : on ne récupère
+ * pas un nom, on en choisit un autre.
+ */
+export async function deleteTemplate(
+  name: string, wabaId = WABA
+): Promise<{ ok: boolean; error?: string }> {
+  if (!TOKEN || !wabaId) return { ok: false, error: "WHATSAPP_TOKEN ou WABA_ID absent" };
+  try {
+    const res = await fetch(
+      `https://graph.facebook.com/${GRAPH}/${wabaId}/message_templates?name=${encodeURIComponent(name)}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${TOKEN}` } }
+    );
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = (j.error || {}) as {
+        message?: string; error_user_msg?: string; error_data?: { details?: string };
+      };
+      return {
+        ok: false,
+        error: [err.error_user_msg, err.error_data?.details, err.message].filter(Boolean).join(" — "),
+      };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
 // ── Lecture du catalogue Meta ───────────────────────────────────────────────
 
 export type MetaCatalogItem = {

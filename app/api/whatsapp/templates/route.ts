@@ -81,3 +81,23 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ ok: true, id: r.id, status: r.status || "PENDING" }, { status: 201 });
 }
+
+// ── Suppression ─────────────────────────────────────────────────────────────
+
+export async function DELETE(req: NextRequest) {
+  const user = await getUserFromRequest(req);
+  if (!user) return NextResponse.json({ error: "Non authentifié" }, { status: 401 });
+
+  const name = (req.nextUrl.searchParams.get("name") || "").trim();
+  if (!name) return NextResponse.json({ error: "name requis" }, { status: 400 });
+
+  const r = await meta.deleteTemplate(name);
+  if (!r.ok) return NextResponse.json({ error: r.error || "Suppression refusée" }, { status: 400 });
+
+  // On le répète dans la réponse : le nom ne sera pas réutilisable de sitôt.
+  // C'est la seule conséquence vraiment irréversible de ce geste.
+  return NextResponse.json({
+    ok: true,
+    avertissement: `« ${name} » est supprimé. Meta garde ce nom bloqué un long moment : pour recréer ce message, choisis un autre nom.`,
+  });
+}
