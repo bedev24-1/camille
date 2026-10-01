@@ -59,7 +59,7 @@ import * as meta from "./meta";
 import { tracer, sessionMeta, type Contexte } from "./handle";
 import { sansAccent, chercher, veutToutVoir } from "./recherche";
 import { lirePrix } from "./prix";
-import { aRenvoyer, noterEnvoi } from "./repetition";
+import { formatVitrine, formatNaturel, noterEnvoi } from "./repetition";
 import {
   resumeMemoire, fusionnerNotes, faitsDesAchats, MAX_NOTES,
   type Souvenir,
@@ -213,89 +213,109 @@ async function catalogue(agentId: string): Promise<Produit[]> {
 async function montrerVitrine(
   ctx: Contexte, prods: Produit[], entete: string, corps: string,
   /**
-   * `true` quand c'est TOUT le catalogue. Un client ne doit pas recevoir
-   * quatre fois le même carrousel de cinq articles dans une conversation —
-   * observé, et c'est un étouffement : il remonte son fil et voit quatre fois
-   * les mêmes montres. Une sélection ciblée, elle, part toujours : c'est une
-   * réponse à sa demande, pas une répétition.
+   * `true` quand c'est TOUT le catalogue.
+   *
+   * Dans ce cas seulement, le FORMAT s'allège si le client vient de le
+   * recevoir : carrousel → liste → carte de catalogue. On ne lui retire rien
+   * et on ne lui demande rien — les mêmes articles restent à un geste — mais
+   * son fil ne se remplit pas quatre fois des mêmes photos.
+   *
+   * Une sélection ciblée garde toujours son grand format : s'il demande les
+   * montres puis les écouteurs, chaque réponse mérite ses fiches.
    */
   complete = false
 ) {
   const { phone } = ctx;
-
-  if (complete && !aRenvoyer(`${ctx.agent.id}|${phone}`, prods.map((p) => p.id))) {
-    await meta.sendText(
-      phone,
-      corps
-        ? `${corps}\n\n_C'est juste au-dessus 👆 — remonte un peu, ou dis-moi ce que tu cherches._`
-        : "C'est juste au-dessus 👆 Remonte un peu, ou dis-moi ce que tu cherches 🙂"
-    );
-    await tracer(ctx.agent.id, phone, "assistant", "[vitrine déjà envoyée]");
-    return;
-  }
-  if (complete) noterEnvoi(`${ctx.agent.id}|${phone}`, prods.map((p) => p.id));
 
   if (!prods.length) {
     await meta.sendText(phone, "Je n'ai rien à te montrer pour le moment 😔 Réécris-moi un peu plus tard.");
     return;
   }
 
-  // ── Une seule fiche ──────────────────────────────────────────────────────
-  if (prods.length === 1) {
-    const p = prods[0];
-    // On ne réécrit PAS le prix ici. La fiche native l'affiche déjà, tenu par
-    // le catalogue Meta. Le redire, c'est se donner une chance de le
-    // contredire — et c'est exactement ce qui est arrivé : « 9 000 FCFA » sur
-    // la fiche, « 90 XAF » dans notre texte juste en dessous.
-    const texte = (corps || p.name) + "\n\nTu peux l'ajouter à ton panier ici 👇";
-    const r = await meta.sendProduct(phone, p.retailerId, texte);
-    if (!r.ok) {
-      console.error("[boutique] fiche produit refusée :", r.error);
-      // Le produit est injoignable (fiche fantôme) : on ne laisse pas le
-      // client sans réponse, on lui ouvre le catalogue.
-      await meta.sendCatalog(phone, "Je n'arrive pas à afficher cet article — voici tout notre catalogue 👇");
-    }
-    await tracer(ctx.agent.id, phone, "assistant", `[fiche] ${p.name}`);
-    return;
-  }
+  const cle = `${ctx.agent.id}|${phone}`;
+  const ids = prods.map((p) => p.id);
+  const format = complete ? formatVitrine(cle, ids) : formatNaturel(prods.length);
+  if (complete) noterEnvoi(cle, ids);
 
-  // ── De 2 à 10 : le carrousel ─────────────────────────────────────────────
-  if (prods.length <= 10) {
-    const r = await meta.sendCarouselRobuste(
-      phone,
-      (corps || "Voici ce qu'on a pour toi") +
-        "\n\nFais défiler 👉 touche une fiche pour l'ajouter à ton panier, puis envoie-moi le panier.",
-      prods.map((p) => p.retailerId)
-    );
-    if (r.rejetes?.length) {
-      console.warn("[boutique] fiches retirées de la vitrine :", r.rejetes.join(", "));
+  switch (format) {
+    // ── Une fiche : photo, prix, bouton « Ajouter au panier » ──────────────
+    case "fiche": {
+      const p = prods[0];
+      // On ne réécrit PAS le prix. La fiche native l'affiche déjà, tenu par le
+      // catalogue Meta. Le redire, c'est se donner une chance de le
+      // contredire — et c'est arrivé : « 9 000 FCFA » sur la fiche, « 90 XAF »
+      // dans notre texte juste en dessous.
+      const r = await meta.sendProduct(
+        phone, p.retailerId, (corps || p.name) + "\n\nTu peux l'ajouter à ton panier ici 👇"
+      );
+      if (!r.ok) {
+        console.error("[boutique] fiche produit refusée :", r.error);
+        // Fiche injoignable : on ne laisse pas le client sans réponse.
+        await meta.sendCatalog(phone, "Je n'arrive pas à afficher cet article — voici tout notre catalogue 👇");
+      }
+      await tracer(ctx.agent.id, phone, "assistant", `[fiche] ${p.name}`);
+      return;
     }
-    if (!r.ok) {
-      console.error("[boutique] carrousel refusé :", r.error);
-      await meta.sendCatalog(phone, corps || "Voici notre catalogue 👇");
+
+    // ── Le carrousel : le plus vendeur, et le plus encombrant ──────────────
+    case "carrousel": {
+      const r = await meta.sendCarouselRobuste(
+        phone,
+        (corps || "Voici ce qu'on a pour toi") +
+          "\n\nFais défiler 👉 touche une fiche pour l'ajouter à ton panier, puis envoie-moi le panier.",
+        prods.slice(0, 10).map((p) => p.retailerId)
+      );
+      if (r.rejetes?.length) console.warn("[boutique] fiches retirées :", r.rejetes.join(", "));
+      if (!r.ok) {
+        console.error("[boutique] carrousel refusé :", r.error);
+        await meta.sendCatalog(phone, corps || "Voici notre catalogue 👇");
+      }
+      await tracer(ctx.agent.id, phone, "assistant", `[carrousel] ${prods.length} articles`);
+      return;
     }
-    await tracer(ctx.agent.id, phone, "assistant", `[carrousel] ${prods.length} articles`);
-    return;
-  }
 
-  // ── Au-delà de 10 : la liste par catégories ──────────────────────────────
-  const parCat = new Map<string, string[]>();
-  for (const p of prods.slice(0, 30)) {
-    const k = p.category || "Nos articles";
-    if (!parCat.has(k)) parCat.set(k, []);
-    parCat.get(k)!.push(p.retailerId);
-  }
-  const sections = [...parCat.entries()].map(([title, retailerIds]) => ({ title, retailerIds }));
+    // ── La liste : tout est là, replié derrière un bouton ──────────────────
+    case "liste": {
+      const parCat = new Map<string, string[]>();
+      for (const p of prods.slice(0, 30)) {
+        const k = p.category || entete || "Nos articles";
+        if (!parCat.has(k)) parCat.set(k, []);
+        parCat.get(k)!.push(p.retailerId);
+      }
+      const sections = [...parCat.entries()].map(([title, retailerIds]) => ({ title, retailerIds }));
+      const r = await meta.sendProductList(
+        phone, entete || "Notre boutique",
+        corps || `Nos ${prods.length} articles, par catégorie 👇`,
+        sections, "Ajoute au panier et envoie-le 🛒"
+      );
+      if (!r.ok) {
+        console.error("[boutique] liste refusée :", r.error);
+        await meta.sendCatalog(phone, corps || "Voici notre catalogue 👇");
+      }
+      await tracer(ctx.agent.id, phone, "assistant", `[liste] ${prods.length} articles`);
+      return;
+    }
 
-  const r = await meta.sendProductList(
-    phone, entete || "Notre boutique", corps || "Voici tout ce qu'on propose",
-    sections, "Ajoute au panier et envoie-le 🛒"
-  );
-  if (!r.ok) {
-    console.error("[boutique] vitrine refusée :", r.error);
-    await meta.sendCatalog(phone, corps || "Voici notre catalogue 👇");
+    // ── La carte de catalogue : une seule carte, tout le catalogue ─────────
+    case "catalogue": {
+      const r = await meta.sendCatalog(
+        phone,
+        corps || "Tout notre catalogue est ici 👇 touche pour parcourir et composer ton panier.",
+        entete || undefined
+      );
+      if (!r.ok) {
+        console.error("[boutique] carte catalogue refusée :", r.error);
+        // Dernier recours : la liste. Mieux vaut encombrer que ne rien montrer.
+        await meta.sendProductList(
+          phone, entete || "Notre boutique", corps || "Voici ce qu'on propose",
+          [{ title: entete || "Nos articles", retailerIds: prods.slice(0, 10).map((p) => p.retailerId) }],
+          "Ajoute au panier 🛒"
+        );
+      }
+      await tracer(ctx.agent.id, phone, "assistant", "[carte catalogue]");
+      return;
+    }
   }
-  await tracer(ctx.agent.id, phone, "assistant", `[liste] ${prods.length} articles`);
 }
 
 // ── L'accueil, et le mode d'emploi ──────────────────────────────────────────
