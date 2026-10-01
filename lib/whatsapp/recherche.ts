@@ -168,3 +168,31 @@ export function formatPour(n: number): "aucun" | "fiche" | "carrousel" | "liste"
   if (n <= 10) return "carrousel";
   return "liste";
 }
+
+/**
+ * Ce message est-il une QUESTION, et non la recherche d'un article ?
+ *
+ * Sert uniquement au repli déterministe, quand le modèle n'a pas répondu. Il
+ * répondait alors à toute phrase non reconnue par le catalogue : « vous avez un
+ * service après-vente ? » recevait le carrousel et « je n'ai pas trouvé
+ * exactement ça ». Montrer des montres à qui demande une garantie, c'est
+ * avouer qu'on n'a pas lu.
+ *
+ * Une question sans réponse ne mérite pas des produits : elle mérite d'être
+ * transmise à quelqu'un qui sait.
+ */
+export function estUneQuestion(message: string): boolean {
+  const t = sansAccent(message);
+  if (!t) return false;
+  // Un nom de produit seul n'est pas une question, même suivi d'un « ? ».
+  const interro =
+    /\b(est ce que|qu est ce|quest ce|c est quoi|cest quoi|pourquoi|comment|quand|combien|est il|y a t il|avez vous|aves vous|peut on|puis je|faut il|y a|possible)\b/.test(t);
+  // Les sujets qui ne sont jamais des articles : les politiques du commerce.
+  const politique =
+    // Pas de limite de mot à la FIN : « ventes », « remises », « retours »
+    // sont les formes que les clients écrivent, et le pluriel faisait échouer
+    // la détection sur le message réel « service apres ventes ? ».
+    /\b(garanti|retour|rembours|echange|facture|apres[ -]?vente|reduction|remise|promo|credit|acompte|paiement|payer|caution|assurance|reclamation)/.test(t) ||
+    /\bsav\b/.test(t);
+  return politique || (interro && t.split(/\s+/).length >= 3);
+}

@@ -57,7 +57,7 @@ import { sectorProfile } from "@/lib/sectorProfiles";
 import { createOrder } from "@/lib/orders";
 import * as meta from "./meta";
 import { tracer, sessionMeta, type Contexte } from "./handle";
-import { sansAccent, chercher, veutToutVoir } from "./recherche";
+import { sansAccent, chercher, veutToutVoir, estUneQuestion } from "./recherche";
 import { lirePrix } from "./prix";
 import { formatVitrine, formatNaturel, noterEnvoi } from "./repetition";
 import {
@@ -1012,6 +1012,26 @@ export async function repondreBoutique(
         trouves.length > 1 ? "Voilà ce qui correspond 👇" : ""
       );
     }
+    // Une QUESTION sans réponse ne mérite pas des produits. Observé : « vous
+    // avez un service après-vente ? » recevait le carrousel et « je n'ai pas
+    // trouvé exactement ça ». Montrer des montres à qui demande une garantie,
+    // c'est avouer qu'on n'a pas lu. On transmet à quelqu'un qui sait — sans
+    // se taire, pour que le client puisse continuer à acheter.
+    if (estUneQuestion(msg.text)) {
+      await alerterSansSeTaire(ctx, msg.text.slice(0, 120));
+      await meta.sendButtons(
+        phone,
+        "Bonne question 🙏 Je transmets à l'équipe, elle te répond ici même.\n\n" +
+          "En attendant, je reste dispo pour te montrer ce qu'on a 👇",
+        [
+          { id: B.catalogue, title: resto ? "Voir la carte" : "Voir la boutique" },
+          { id: B.conseiller, title: "Un conseiller" },
+        ],
+        agent.business_name || undefined
+      );
+      return;
+    }
+
     // Rien trouvé, mais le client parle visiblement d'achat : on montre ce
     // qu'on a. Répondre « je n'ai pas trouvé » à un acheteur en main, avec un
     // catalogue plein, c'est perdre la vente pour un mot mal orthographié.

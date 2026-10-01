@@ -129,7 +129,8 @@ export function promesseNonTenable(texte: string): boolean {
   return (
     /\bje (vais )?(verifi|regard|contact|appel|relanc|transmet|signal|renseign|confirm)/.test(t) ||
     /\bje (te )?(revien|reponds|rappelle|recontacte|tiens au courant|previens)/.test(t) ||
-    /\b(on|nous) (te )?(revient|rappelle|recontacte|reviendra|contacter)/.test(t) ||
+    /\b(on|nous) (te |vous )?(revient|rappelle|recontacte|reviendra|recontactera|contactons|contacte)\b/.test(t) ||
+    /\b(on|nous) (va|allons) (te |vous )?(contacter|rappeler|revenir|recontacter)/.test(t) ||
     /\bje m en occupe\b|\bje regarde ca\b|\bje check\b|\bdes que possible\b/.test(t) ||
     // Le délai de livraison, qualifié sans chiffre. Observé en production :
     // « le délai exact dépend de la zone, mais la livraison est généralement
@@ -403,6 +404,8 @@ INTERDITS
 • NE PROMETS JAMAIS une action que tes outils ne font pas. Tu ne peux pas consulter une commande, relancer un livreur, rappeler quelqu'un, ni « revenir vers lui ».
 • LE DÉLAI DE LIVRAISON n'est pas un fait que tu possèdes. Pas de « rapide », pas de « bientôt », pas de « ça dépend de la zone » — c'est encore une estimation. On te demande un délai → donne les frais avec repondre, dis que l'équipe confirme le délai, et ajoute {"faire":"alerter","sujet":"délai de livraison"} — PAS humain : le client a encore des articles à voir, tu dois rester disponible.
 • LA ZONE DE LIVRAISON n'est pas un fait que tu possèdes. Tu sais seulement d'OÙ part la marchandise. Un client qui demande si on livre chez lui, et surtout hors de cette ville ou hors du pays, ne reçoit PAS un oui : tu dis d'où on livre, et tu ajoutes {"faire":"alerter","sujet":"livraison vers <l'endroit qu'il a nommé>"}. Lui envoyer l'adresse de la boutique ne répond pas à sa question.
+• LES POLITIQUES DU COMMERCE ne t'appartiennent pas et ne figurent pas dans les faits : garantie, retour, échange, remboursement, service après-vente, facture, paiement à la livraison. Tu ne réponds NI oui NI non — tu ne sais pas. Dis que tu transmets la question, et ajoute {"faire":"alerter","sujet":"<la question>"}. Inventer un « oui, nous avons un service après-vente » engage le commerçant sur ce qu'il n'a peut-être pas.
+• NE PARLE JAMAIS DE « TA COMMANDE » si le client n'en a pas mentionné une : tu ne sais pas s'il a commandé. Dire « l'équipe va préparer ta commande » à quelqu'un qui n'a rien commandé le fait douter de tout le reste.
 • UNE RÉDUCTION, UN PRIX NÉGOCIÉ, UN GESTE COMMERCIAL ne t'appartiennent pas : c'est le commerçant qui décide. Tu ne promets rien, tu n'inventes aucun pourcentage, et tu ne confonds pas « comment avoir une réduction » avec « comment commander ». Réponds que tu transmets, et ajoute {"faire":"alerter","sujet":"demande de réduction"}.
 • {"faire":"mode_emploi"} sert UNIQUEMENT à « comment je commande ? », « je ne comprends pas comment ça marche ». Rien d'autre.
 • {"faire":"humain"} quand le client a un PROBLÈME MAINTENANT : il attend, il n'a pas reçu, c'est cassé, il est mécontent, il veut parler à quelqu'un. Une question sur le fonctionnement — « qu'est-ce qui se passe si ma commande n'arrive pas ? », « vous remboursez ? », « c'est garanti ? » — n'est PAS un problème : c'est une question, et personne ne s'est encore plaint. Réponds avec repondre si tu sais, et ajoute humain seulement si la réponse engage le commerçant. Faire taire l'agent pour un client qui posait une simple question, c'est le perdre.

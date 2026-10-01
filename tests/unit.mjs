@@ -82,7 +82,8 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
 
 // ═══ lib/whatsapp/recherche — les bugs signalés par le marchand ═════════════
 {
-  const { chercher, formatPour, veutToutVoir } = await import(`${DIST}/whatsapp/recherche.js`);
+  const { chercher, formatPour, veutToutVoir, estUneQuestion } =
+    await import(`${DIST}/whatsapp/recherche.js`);
   groupe("recherche — « montre » verbe contre « montre » objet");
 
   const CAT = [
@@ -127,6 +128,22 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   chk("« le prix de la montre oraimo » reste une recherche", !veutToutVoir("la montre oraimo"));
   chk("resto : « vous avez quoi comme plat »", veutToutVoir("vous avez quoi comme plat", true));
   chk("resto : « je veux du poulet » reste une recherche", !veutToutVoir("je veux du poulet", true));
+
+  // Le repli déterministe répondait à TOUTE phrase non reconnue par le
+  // catalogue. « vous avez un service apres ventes? » recevait le carrousel et
+  // « je n'ai pas trouvé exactement ça ». Montrer des montres à qui demande
+  // une garantie, c'est avouer qu'on n'a pas lu.
+  chk("« vous avez un service apres ventes? »", estUneQuestion("vous avez un service apres ventes?"));
+  chk("« c'est garanti combien de temps »", estUneQuestion("c'est garanti combien de temps"));
+  chk("« est ce que je peux rendre »", estUneQuestion("est ce que je peux rendre"));
+  chk("« vous faites des remises ? »", estUneQuestion("vous faites des remises ?"));
+  chk("« je peux payer a la livraison »", estUneQuestion("je peux payer a la livraison"));
+  // Et l'inverse : une recherche d'article ne doit PAS être transmise à un
+  // humain, sinon on fait attendre un client qu'on pouvait servir.
+  chk("« une montre » reste une recherche", !estUneQuestion("une montre"));
+  chk("« freepods » reste une recherche", !estUneQuestion("freepods"));
+  chk("« montre oraimo ? » reste une recherche", !estUneQuestion("montre oraimo ?"));
+  chk("« bonjour » n'est pas une question", !estUneQuestion("bonjour"));
 }
 
 // ═══ lib/whatsapp/comprendre — la barrière entre le modèle et le client ═════
@@ -199,6 +216,15 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   chk("« je m'en occupe »", promesseNonTenable("Pas de souci, je m'en occupe"));
   chk("« on te rappelle »", promesseNonTenable("On te rappelle très vite"));
   chk("« je transmets au livreur »", promesseNonTenable("Je transmets au livreur"));
+  chk("« on te contacte »", promesseNonTenable("On te contacte dès qu'on a la réponse"));
+  chk("« nous allons te rappeler »", promesseNonTenable("Nous allons te rappeler"));
+  // FAUX POSITIF OBSERVÉ. « Tu peux nous contacter » est une INVITATION, pas
+  // une promesse. Mon garde-fou la rejetait, la compréhension entière tombait,
+  // et le client recevait le catalogue au lieu d'une réponse.
+  chk("« tu peux nous contacter » est une invitation",
+    !promesseNonTenable("Tu peux nous contacter par WhatsApp ou passer à la boutique"));
+  chk("« pour nous contacter, écris ici »",
+    !promesseNonTenable("Pour nous contacter, écris ici"));
   // Observé en production : « le délai exact dépend de la zone, mais la
   // livraison est généralement rapide ». Aucun chiffre, donc l'ancrage laisse
   // passer — et c'est pourtant un engagement sur un délai que personne ne nous
