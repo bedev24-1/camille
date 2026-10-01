@@ -234,6 +234,45 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
       .raisonnement.includes("non ancré"));
 }
 
+// ═══ comprendre — le cache qui économise le quota ══════════════════════════
+{
+  const { cleCache, empreinte, statsCache, vidangerCache } =
+    await import(`${DIST}/whatsapp/comprendre.js`);
+  groupe("cache — ne jamais servir à un client la réponse d'un autre");
+
+  const base = {
+    modeles: ["m1"], message: "bonjour", resto: false,
+    prods: [{ id: "p1", name: "A", price: 1000, currency: "XAF", category: null, stock: 2 }],
+    faits: { nom: "B", adresse: "Akwa", horaires: "8h-18h", fraisLivraison: 1000, livraison: true, devise: "XAF" },
+    memoire: "", historique: [],
+  };
+  const k = (o) => cleCache({ ...base, ...o });
+
+  chk("deux fois la même entrée → même clé", k({}) === k({}));
+  // La casse et les accents ne doivent pas multiplier les entrées : « Bonjour »
+  // et « bonjour » sont la même question.
+  chk("« Bonjour » et « bonjour » partagent la clé", k({ message: "Bonjour" }) === k({ message: "bonjour " }));
+
+  // LA PROPRIÉTÉ CRITIQUE : tout ce qui change la réponse change la clé. Sans
+  // ça, un client recevrait la réponse calculée pour quelqu'un d'autre.
+  chk("un message différent → clé différente", k({ message: "au revoir" }) !== k({}));
+  chk("une MÉMOIRE différente → clé différente", k({ memoire: "aime le noir" }) !== k({}));
+  chk("un historique différent → clé différente", k({ historique: [{ role: "user", content: "x" }] }) !== k({}));
+  chk("un PRIX changé → clé différente",
+    k({ prods: [{ ...base.prods[0], price: 2000 }] }) !== k({}));
+  chk("un STOCK changé → clé différente",
+    k({ prods: [{ ...base.prods[0], stock: 0 }] }) !== k({}));
+  chk("des frais de livraison changés → clé différente",
+    k({ faits: { ...base.faits, fraisLivraison: 2000 } }) !== k({}));
+  chk("restaurant et boutique ne partagent pas", k({ resto: true }) !== k({}));
+  chk("un modèle différent → clé différente", k({ modeles: ["m2"] }) !== k({}));
+
+  chk("l'empreinte est stable", empreinte("abc") === empreinte("abc"));
+  chk("l'empreinte distingue", empreinte("abc") !== empreinte("abd"));
+  vidangerCache();
+  eq("vidangé → aucune entrée", statsCache().entrees, 0);
+}
+
 // ═══ lib/whatsapp/prix — « 9 000 FCFA » lu comme 90 ════════════════════════
 {
   const { lirePrix } = await import(`${DIST}/whatsapp/prix.js`);

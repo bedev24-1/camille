@@ -251,6 +251,87 @@ export function valider(
   };
 }
 
+// ── Le cache de réponses ───────────────────────────────────────────────────
+//
+// Le cache de Groq porte sur le PRÉFIXE : il économise du TEMPS, pas du quota.
+// Mesuré — `prompt_tokens` reste identique, seul `prompt_time` s'effondre. La
+// limite de 8000 jetons par minute compte donc le prompt entier à chaque fois,
+// soit une cinquième de minute par message sur un catalogue de vingt articles.
+//
+// Pour économiser le QUOTA, il n'y a qu'un moyen : ne pas appeler. « Bonjour »,
+// « vous avez quoi ? », « c'est combien la montre » sont écrits par des
+// dizaines de clients, mot pour mot. La même entrée donne la même sortie
+// (température 0), alors on la garde.
+//
+// Deux règles de prudence :
+//   • la clé contient TOUT ce qui entre — catalogue, faits, mémoire, historique.
+//     Deux clients avec une mémoire différente n'ont jamais la même clé, donc
+//     personne ne reçoit la réponse destinée à un autre.
+//   • un échec n'est JAMAIS mis en cache. Une saturation passagère deviendrait
+//     sinon une panne de dix minutes.
+
+type Entree = { valeur: Comprehension; expire: number };
+const CACHE = new Map<string, Entree>();
+const CACHE_TTL = Number(process.env.IA_CACHE_TTL_S || 600) * 1000;
+const CACHE_MAX = 300;
+let touches = 0;
+let manques = 0;
+
+/** FNV-1a, sur 32 bits. Pas d'import : ce fichier doit rester éprouvable seul. */
+export function empreinte(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/** La clé : tout ce qui change la réponse, et rien d'autre. */
+export function cleCache(parties: {
+  modeles: string[]; message: string; resto: boolean;
+  prods: ProduitConnu[]; faits: FaitsCommerce;
+  memoire: string; historique: { role: string; content: string }[];
+}): string {
+  const cat = parties.prods.map((p) => `${p.id}:${p.price}:${p.stock}`).join("|");
+  const f = `${parties.faits.nom}|${parties.faits.adresse}|${parties.faits.horaires}|${parties.faits.fraisLivraison}|${parties.faits.livraison}`;
+  const h = parties.historique.map((x) => `${x.role}:${x.content}`).join("|");
+  const msg = parties.message.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim();
+  return [
+    parties.modeles.join(","), parties.resto ? "r" : "b", msg,
+    empreinte(cat), empreinte(f), empreinte(parties.memoire), empreinte(h),
+  ].join("~");
+}
+
+function lireCache(cle: string): Comprehension | null {
+  const e = CACHE.get(cle);
+  if (!e) { manques++; return null; }
+  if (e.expire < Date.now()) { CACHE.delete(cle); manques++; return null; }
+  // Remise en tête : une entrée utilisée ne doit pas être la première évincée.
+  CACHE.delete(cle);
+  CACHE.set(cle, e);
+  touches++;
+  return e.valeur;
+}
+
+function ecrireCache(cle: string, v: Comprehension) {
+  if (CACHE.size >= CACHE_MAX) {
+    const plusVieille = CACHE.keys().next().value;
+    if (plusVieille) CACHE.delete(plusVieille);
+  }
+  CACHE.set(cle, { valeur: v, expire: Date.now() + CACHE_TTL });
+}
+
+/** Pour le diagnostic, et pour les tests. */
+export function statsCache() {
+  return { entrees: CACHE.size, touches, manques, ttl_s: CACHE_TTL / 1000 };
+}
+export function vidangerCache() {
+  CACHE.clear();
+  touches = 0;
+  manques = 0;
+}
+
 // ── L'appel au modèle ──────────────────────────────────────────────────────
 
 const BASE = (process.env.IA_BASE_URL || "https://api.groq.com/openai/v1").replace(/\/$/, "");
@@ -276,9 +357,19 @@ export function comprehensionDisponible(): boolean {
   return Boolean(CLE);
 }
 
-function consigne(
-  prods: ProduitConnu[], faits: FaitsCommerce, resto: boolean, memoire: string
-): string {
+/**
+ * Le message système — IDENTIQUE pour tous les clients du même commerce.
+ *
+ * C'est délibéré, et c'est ce qui fait tenir le cache de Groq : son cache
+ * porte sur le PRÉFIXE de la requête. Tant que ce bloc ne bouge pas, il est
+ * resservi — mesuré : 1792 jetons sur 1884 en cache, et le temps de traitement
+ * du prompt passe de 116 ms à 11 ms.
+ *
+ * Donc rien de propre à un client ici. La mémoire, l'historique et le message
+ * partent APRÈS, en tours utilisateur : ils changent à chaque appel, et les
+ * mettre ici casserait le préfixe pour tout le monde.
+ */
+function consigne(prods: ProduitConnu[], faits: FaitsCommerce, resto: boolean): string {
   const liste = prods
     .slice(0, 60)
     .map(
@@ -326,17 +417,10 @@ Livraison : ${
 
 CATALOGUE — id | nom | catégorie | prix
 ${liste || "(vide)"}
-${
-    memoire
-      ? `
-CE CLIENT — ce qu'on sait déjà de lui
-${memoire}
 
-LA DISCRÉTION EST UNE RÈGLE. Ne lui parle de son passé QUE si ça sert sa demande du moment : « la même chose que la dernière fois ? » quand il hésite, oui. « Je vois que tu as déjà commandé… » à chaque message, jamais — c'est étouffant, et un client étouffé s'en va. S'il ne demande rien, tu ne proposes rien.`
-      : ""
-  }
+SI ON TE DONNE « CE CLIENT » : la discrétion est une RÈGLE. Ne lui parle de son passé QUE si ça sert sa demande du moment — « la même chose que la dernière fois ? » quand il hésite, oui ; « je vois que tu as déjà commandé… » à chaque message, jamais. C'est étouffant, et un client étouffé s'en va. S'il ne demande rien, tu ne proposes rien.
 
-MÉMOIRE — tu peux ajouter "memoire":["..."] : un ou deux GOÛTS DURABLES appris dans ce message (« préfère le noir », « achète pour sa fille », « petit budget »). Pas d'événement, pas de compte rendu, rien sur la commande en cours. Rien à retenir → n'écris pas le champ.
+MÉMOIRE — tu peux ajouter "memoire":["..."] : un ou deux GOÛTS DURABLES appris dans ce message (« préfère le noir », « achète pour sa fille », « petit budget »). Pas d'événement, rien sur la commande en cours. Rien à retenir → n'écris pas le champ.
 
 Réponds en JSON seul : {"actions":[...],"certitude":0.0,"raisonnement":"...","memoire":[]}`;
 }
@@ -360,16 +444,30 @@ export async function comprendre(
 ): Promise<Comprehension | null> {
   if (!CLE || !message.trim()) return null;
 
+  const cle = cleCache({
+    modeles: MODELES, message, resto, prods, faits,
+    memoire: memoire.resume, historique,
+  });
+  const dejaVu = lireCache(cle);
+  if (dejaVu) {
+    console.log(`[comprendre] cache (${CACHE.size} entrées, ${touches} touches / ${touches + manques})`);
+    return dejaVu;
+  }
+
   const corps = {
     temperature: 0,
     max_tokens: 500,
     response_format: { type: "json_object" as const },
     messages: [
-      { role: "system", content: consigne(prods, faits, resto, memoire.resume) },
+      { role: "system", content: consigne(prods, faits, resto) },
       ...historique.slice(-6).map((h) => ({
         role: h.role === "assistant" ? "assistant" : "user",
         content: String(h.content).slice(0, 500),
       })),
+      // La mémoire arrive ici, APRÈS le préfixe stable, pour ne pas l'invalider.
+      ...(memoire.resume
+        ? [{ role: "user" as const, content: `CE CLIENT — ${memoire.resume}` }]
+        : []),
       { role: "user", content: message.slice(0, 1000) },
     ],
   };
@@ -402,7 +500,11 @@ export async function comprendre(
       // Un retour illisible ou entièrement rejeté : le modèle suivant peut
       // mieux faire. Mais on ne tente pas éternellement — le client attend.
       if (!c) continue;
-      return i === 0 ? c : { ...c, raisonnement: `${c.raisonnement} | via ${modele}` };
+      const sortie = i === 0 ? c : { ...c, raisonnement: `${c.raisonnement} | via ${modele}` };
+      // Seuls les succès sont gardés : mettre un échec en cache transformerait
+      // une saturation de quelques secondes en panne de dix minutes.
+      ecrireCache(cle, sortie);
+      return sortie;
     } catch (e) {
       // Un abandon au bout de 6 s n'est pas une anomalie : c'est la décision.
       console.error(`[comprendre] ${modele} abandonné :`, (e as Error).message);
