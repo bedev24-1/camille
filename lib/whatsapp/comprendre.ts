@@ -33,6 +33,7 @@ export type Action =
   | { faire: "mode_emploi" }
   | { faire: "infos" }
   | { faire: "humain" }
+  | { faire: "alerter"; sujet: string }
   | { faire: "position" }
   | { faire: "retrait" }
   | { faire: "accueil" };
@@ -186,6 +187,12 @@ export function valider(
         actions.push({ faire: x.faire } as Action);
         break;
 
+      case "alerter": {
+        const sujet = String(x.sujet || "").trim().slice(0, 200);
+        actions.push({ faire: "alerter", sujet: sujet || "Question du client" });
+        break;
+      }
+
       case "montrer": {
         // Le modèle choisit PARMI les identifiants fournis. Tout identifiant
         // inconnu est inventé : on le jette, on ne le cherche pas.
@@ -221,7 +228,7 @@ export function valider(
   // Une promesse de suivi sans humain au bout est un mensonge. On n'essaie pas
   // de la réécrire : on écarte toute la compréhension, et le repli
   // déterministe envoie la réclamation à un humain — ce qu'il fallait faire.
-  if (promesse && !actions.some((a) => a.faire === "humain")) return null;
+  if (promesse && !actions.some((a) => a.faire === "humain" || a.faire === "alerter")) return null;
 
   const c = Number(o.certitude);
   return {
@@ -281,7 +288,8 @@ Tu as une boîte à outils. Chaque outil PRODUIT quelque chose chez le client �
 {"faire":"position"} → affiche le bouton natif « Envoyer ma position ». Pour obtenir ou corriger une adresse de livraison.
 {"faire":"retrait"} → il vient chercher sur place.
 {"faire":"mode_emploi"} → la vidéo qui montre comment commander.
-{"faire":"humain"} → passe la main à l'équipe, et tu te tais après.
+{"faire":"humain"} → passe la main à l'équipe, et tu te tais COMPLÈTEMENT après : ce client ne reçoit plus aucune réponse de toi, même s'il demande autre chose. N'utilise cet outil que si le client a vraiment besoin d'une personne.
+{"faire":"alerter","sujet":"..."} → prévient le commerçant, et TU CONTINUES à parler. C'est l'outil des engagements : tu promets que l'équipe confirmera quelque chose, et quelqu'un est réellement averti. Préfère-le à humain partout où tu peux encore être utile.
 {"faire":"accueil"} → une salutation, rien de plus à faire.
 
 COMBINER est normal, et souvent meilleur : un prix se répond ET se montre (repondre + montrer), « des écouteurs, et vous livrez ? » c'est montrer + repondre. Mets les outils dans l'ordre utile.
@@ -290,7 +298,7 @@ INTERDITS
 • Un identifiant hors catalogue. Ce qu'il cherche n'y est pas → dis-le avec repondre, puis vitrine.
 • Un chiffre absent des faits : prix, stock, frais. Et JAMAIS de délai de livraison — personne ne te l'a autorisé.
 • NE PROMETS JAMAIS une action que tes outils ne font pas. Tu ne peux pas consulter une commande, relancer un livreur, rappeler quelqu'un, ni « revenir vers lui ».
-• LE DÉLAI DE LIVRAISON n'est pas un fait que tu possèdes. Pas de « rapide », pas de « bientôt », pas de « ça dépend de la zone » — c'est encore une estimation. On te demande un délai → donne les frais avec repondre, dis que l'équipe confirme le délai, et ajoute {"faire":"humain"} pour qu'elle le fasse vraiment.
+• LE DÉLAI DE LIVRAISON n'est pas un fait que tu possèdes. Pas de « rapide », pas de « bientôt », pas de « ça dépend de la zone » — c'est encore une estimation. On te demande un délai → donne les frais avec repondre, dis que l'équipe confirme le délai, et ajoute {"faire":"alerter","sujet":"délai de livraison"} — PAS humain : le client a encore des articles à voir, tu dois rester disponible.
 • {"faire":"humain"} quand le client a un PROBLÈME MAINTENANT : il attend, il n'a pas reçu, c'est cassé, il est mécontent, il veut parler à quelqu'un. Une question sur le fonctionnement — « qu'est-ce qui se passe si ma commande n'arrive pas ? », « vous remboursez ? », « c'est garanti ? » — n'est PAS un problème : c'est une question, et personne ne s'est encore plaint. Réponds avec repondre si tu sais, et ajoute humain seulement si la réponse engage le commerçant. Faire taire l'agent pour un client qui posait une simple question, c'est le perdre.
 • Tu hésites → baisse certitude. En dessous de 0,55 c'est traité sans toi, ce n'est pas un échec.
 

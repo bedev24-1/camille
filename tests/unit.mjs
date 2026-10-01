@@ -213,6 +213,16 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
 
   chk("une promesse sans humain écarte TOUT",
     v({ actions: [{ faire: "repondre", texte: "Je vérifie ta commande et je reviens vers toi" }], certitude: 0.99 }) === null);
+  // `alerter` rend une promesse tenable SANS faire taire l'agent. Observé en
+  // production : une question de délai a déclenché le passage à un humain, et
+  // Camille s'est tue pour tout le reste de la conversation.
+  chk("une alerte rend la promesse tenable, sans silence",
+    v({ actions: [
+      { faire: "repondre", texte: "Livraison 1000 XAF, l'équipe te confirme le délai" },
+      { faire: "alerter", sujet: "délai de livraison" },
+    ], certitude: 0.95 })?.actions.length === 2);
+  chk("alerter sans sujet garde un libellé",
+    v({ actions: [{ faire: "alerter" }], certitude: 0.9 }).actions[0].sujet.length > 0);
   chk("la même promesse passe si un humain prend le relais",
     v({ actions: [
       { faire: "repondre", texte: "Je transmets à l'équipe, on te répond ici" },
@@ -222,6 +232,30 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   chk("le rejet est consigné pour la trace",
     v({ actions: [{ faire: "vitrine" }, { faire: "repondre", texte: "7 jours" }], certitude: 0.9 })
       .raisonnement.includes("non ancré"));
+}
+
+// ═══ lib/whatsapp/prix — « 9 000 FCFA » lu comme 90 ════════════════════════
+{
+  const { lirePrix } = await import(`${DIST}/whatsapp/prix.js`);
+  groupe("prix — ne jamais deviner le format d'un nombre");
+
+  // Le défaut : `digits / 100` supposait deux décimales partout. Vrai pour
+  // l'euro, FAUX pour le franc CFA qui n'en a pas. Le carrousel affichait
+  // « 9 000 FCFA » et notre texte « 90 XAF » juste en dessous.
+  eq("« 9 000 FCFA » → 9000", lirePrix("9 000 FCFA"), 9000);
+  eq("« 5 000 FCFA » → 5000", lirePrix("5 000 FCFA"), 5000);
+  eq("« 9000 XAF » → 9000", lirePrix("9000 XAF"), 9000);
+  // Deux décimales : elles existent vraiment chez Meta, selon la devise.
+  eq("« 9 000,00 XAF » → 9000", lirePrix("9 000,00 XAF"), 9000);
+  eq("« 12,50 EUR » → 12.5", lirePrix("12,50 EUR"), 12.5);
+  eq("« $12.50 » → 12.5", lirePrix("$12.50"), 12.5);
+  // Le point comme séparateur de milliers — écriture courante ici.
+  eq("« 1.500 FCFA » → 1500", lirePrix("1.500 FCFA"), 1500);
+  eq("« 1,234,567 » → 1234567", lirePrix("1,234,567"), 1234567);
+  // Un prix inconnu doit rester inconnu : 0 afficherait « gratuit ».
+  eq("vide → null", lirePrix(""), null);
+  eq("absent → null", lirePrix(null), null);
+  eq("sans chiffre → null", lirePrix("sur devis"), null);
 }
 
 // ═══ lib/orders — les heures d'ouverture en texte libre ═════════════════════

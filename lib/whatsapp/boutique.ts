@@ -58,6 +58,7 @@ import { createOrder } from "@/lib/orders";
 import * as meta from "./meta";
 import { tracer, sessionMeta, type Contexte } from "./handle";
 import { sansAccent, chercher, veutToutVoir } from "./recherche";
+import { lirePrix } from "./prix";
 import {
   comprendre, comprehensionDisponible,
   type Action, type FaitsCommerce,
@@ -166,13 +167,15 @@ async function catalogue(agentId: string): Promise<Produit[]> {
   return m.items
     .filter((it) => it.availability !== "out of stock" && it.sendable !== false)
     .map((it) => {
-      // Meta renvoie le prix formaté (« 5 000,00 XAF ») : on en extrait le
-      // nombre pour pouvoir calculer un total.
-      const n = Number(String(it.price || "").replace(/[^0-9]/g, "")) / 100;
+      // Meta renvoie le prix FORMATÉ, et son format dépend de la devise :
+      // « 9 000 FCFA » sans décimales, « 12,50 EUR » avec. On le LIT, on ne
+      // devine plus — la supposition « il y a toujours deux décimales »
+      // annonçait 90 XAF pour un article à 9 000.
+      const n = lirePrix(it.price);
       return {
         id: it.retailer_id,
         name: it.name,
-        price: Number.isFinite(n) && n > 0 ? n : null,
+        price: n != null && n > 0 ? n : null,
         currency: "XAF",
         category: null,
         stock: null,
@@ -210,8 +213,11 @@ async function montrerVitrine(ctx: Contexte, prods: Produit[], entete: string, c
   // ── Une seule fiche ──────────────────────────────────────────────────────
   if (prods.length === 1) {
     const p = prods[0];
-    const prix = p.price != null ? ` — ${money(p.price, p.currency)}` : "";
-    const texte = (corps || `${p.name}${prix}`) + "\n\nTu peux l'ajouter à ton panier ici 👇";
+    // On ne réécrit PAS le prix ici. La fiche native l'affiche déjà, tenu par
+    // le catalogue Meta. Le redire, c'est se donner une chance de le
+    // contredire — et c'est exactement ce qui est arrivé : « 9 000 FCFA » sur
+    // la fiche, « 90 XAF » dans notre texte juste en dessous.
+    const texte = (corps || p.name) + "\n\nTu peux l'ajouter à ton panier ici 👇";
     const r = await meta.sendProduct(phone, p.retailerId, texte);
     if (!r.ok) {
       console.error("[boutique] fiche produit refusée :", r.error);
@@ -558,6 +564,7 @@ async function executer(
       case "mode_emploi": await envoyerTuto(ctx, resto); break;
       case "infos":       await donnerInfos(ctx); break;
       case "humain":      await passerLaMain(ctx); break;
+      case "alerter":     await alerterSansSeTaire(ctx, a.sujet); break;
       case "retrait":
         await meta.sendText(phone, "C'est noté, on te garde ça 👌");
         await montrerOuNousSommes(ctx);
@@ -875,6 +882,41 @@ async function donnerInfos(ctx: Contexte) {
       agent.business_name || "", agent.location || ""
     );
   }
+}
+
+/**
+ * Prévenir le commerçant — SANS faire taire Camille.
+ *
+ * L'outil qui manquait, et son absence a coûté deux clients. `passerLaMain`
+ * met `human_takeover` à vrai : ce client ne reçoit plus AUCUNE réponse
+ * automatique, même s'il demande autre chose. C'est juste pour une
+ * réclamation. Ça ne l'est pas du tout pour « en combien de temps vous
+ * livrez ? » — observé en production : le client a eu son prix, puis « je
+ * passe le relais à l'équipe », et Camille s'est tue pour la suite.
+ *
+ * Ici, on crée la tâche pour le commerçant et on continue de servir. C'est ce
+ * qui rend une promesse tenable sans sacrifier la conversation : quelqu'un est
+ * réellement averti, et le client peut encore acheter.
+ */
+async function alerterSansSeTaire(ctx: Contexte, sujet: string) {
+  const { agent, msg, phone } = ctx;
+  try {
+    await query(
+      `INSERT INTO camille.owner_tasks (agent_id, phone, type, title, content)
+       VALUES ($1, $2, 'complaint', $3, $4::jsonb)`,
+      [
+        agent.id, phone,
+        `À confirmer : ${sujet} — ${phone}`,
+        JSON.stringify({ kind: "a_confirmer", sujet, message: msg.text || "", contact: phone }),
+      ]
+    );
+  } catch (e) {
+    // La tâche n'a pas été créée : alors la promesse n'est PAS tenable, et il
+    // vaut mieux passer vraiment la main que laisser le client attendre.
+    console.error("[boutique] alerte non enregistrée :", (e as Error).message);
+    return passerLaMain(ctx);
+  }
+  await tracer(agent.id, phone, "assistant", `[alerte] ${sujet}`);
 }
 
 /**
