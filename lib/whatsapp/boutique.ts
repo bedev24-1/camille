@@ -73,6 +73,7 @@ const B = {
   infos: "cam:infos",
   tuto: "cam:tuto",
   rode: "cam:rode",
+  ok: "cam:ok",
 } as const;
 
 /**
@@ -620,7 +621,7 @@ async function orienterNouveau(ctx: Contexte, resto: boolean) {
       `_${resto ? "Tu touches un plat" : "Tu touches un article"}, il va dans ton panier, et tu m'envoies le panier._`,
     [
       { id: B.tuto, title: "Montre-moi" },
-      { id: B.rode, title: resto ? "Ça va, la carte" : "Ça va, la boutique" },
+      { id: B.ok, title: "Ça va, merci" },
       { id: B.conseiller, title: "Un conseiller" },
     ],
     agent.business_name || undefined
@@ -712,6 +713,18 @@ export async function repondreBoutique(
         resto ? "Notre carte" : "Notre boutique",
         resto ? "Parfait, voilà notre carte 🍽️" : "Parfait, voilà ce qu'on a 🛍️"
       );
+    }
+    // « Ça va, merci » : il a déjà sa réponse sous les yeux. Lui renvoyer le
+    // catalogue ferait DEUX carrousels identiques à la suite — c'est ce qui
+    // s'est produit en production, et ça donne l'impression d'un bug.
+    if (id === B.ok) {
+      await meta.sendText(
+        phone,
+        resto
+          ? "Parfait 👌 Touche un plat pour l'ajouter à ton panier, puis envoie-moi le panier 🛒"
+          : "Parfait 👌 Touche un article pour l'ajouter à ton panier, puis envoie-moi le panier 🛒"
+      );
+      return;
     }
     if (id === B.livrer) return demanderPosition(ctx);
     if (id === B.retirer) {

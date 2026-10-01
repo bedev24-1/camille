@@ -125,7 +125,13 @@ export function promesseNonTenable(texte: string): boolean {
     /\bje (vais )?(verifi|regard|contact|appel|relanc|transmet|signal|renseign|confirm)/.test(t) ||
     /\bje (te )?(revien|reponds|rappelle|recontacte|tiens au courant|previens)/.test(t) ||
     /\b(on|nous) (te )?(revient|rappelle|recontacte|reviendra|contacter)/.test(t) ||
-    /\bje m en occupe\b|\bje regarde ca\b|\bje check\b|\bdes que possible\b|\btres vite\b/.test(t)
+    /\bje m en occupe\b|\bje regarde ca\b|\bje check\b|\bdes que possible\b/.test(t) ||
+    // Le délai de livraison, qualifié sans chiffre. Observé en production :
+    // « le délai exact dépend de la zone, mais la livraison est généralement
+    // rapide ». Aucun chiffre, donc l'ancrage laisse passer — et c'est pourtant
+    // un engagement sur un délai que personne ne nous a donné. Un client qui
+    // lit « rapide » et reçoit sa commande trois jours plus tard a été trompé.
+    /\b(rapide|rapidement|bientot|sous peu|incessamment|express|sans tarder|tres vite|dans la journee|brefs delais|en un rien de temps)\b/.test(t)
   );
 }
 
@@ -283,7 +289,9 @@ COMBINER est normal, et souvent meilleur : un prix se répond ET se montre (repo
 INTERDITS
 • Un identifiant hors catalogue. Ce qu'il cherche n'y est pas → dis-le avec repondre, puis vitrine.
 • Un chiffre absent des faits : prix, stock, frais. Et JAMAIS de délai de livraison — personne ne te l'a autorisé.
-• NE PROMETS JAMAIS une action que tes outils ne font pas. Tu ne peux pas consulter une commande, relancer un livreur, rappeler quelqu'un, ni « revenir vers lui ». Un client qui attend, qui réclame, qui se plaint, dont la commande a un problème → {"faire":"humain"}, et RIEN d'autre. C'est la seule réponse honnête : une personne prend vraiment le relais.
+• NE PROMETS JAMAIS une action que tes outils ne font pas. Tu ne peux pas consulter une commande, relancer un livreur, rappeler quelqu'un, ni « revenir vers lui ».
+• LE DÉLAI DE LIVRAISON n'est pas un fait que tu possèdes. Pas de « rapide », pas de « bientôt », pas de « ça dépend de la zone » — c'est encore une estimation. On te demande un délai → donne les frais avec repondre, dis que l'équipe confirme le délai, et ajoute {"faire":"humain"} pour qu'elle le fasse vraiment.
+• {"faire":"humain"} quand le client a un PROBLÈME MAINTENANT : il attend, il n'a pas reçu, c'est cassé, il est mécontent, il veut parler à quelqu'un. Une question sur le fonctionnement — « qu'est-ce qui se passe si ma commande n'arrive pas ? », « vous remboursez ? », « c'est garanti ? » — n'est PAS un problème : c'est une question, et personne ne s'est encore plaint. Réponds avec repondre si tu sais, et ajoute humain seulement si la réponse engage le commerçant. Faire taire l'agent pour un client qui posait une simple question, c'est le perdre.
 • Tu hésites → baisse certitude. En dessous de 0,55 c'est traité sans toi, ce n'est pas un échec.
 
 FAITS — la seule vérité

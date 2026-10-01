@@ -199,7 +199,15 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   chk("« je m'en occupe »", promesseNonTenable("Pas de souci, je m'en occupe"));
   chk("« on te rappelle »", promesseNonTenable("On te rappelle très vite"));
   chk("« je transmets au livreur »", promesseNonTenable("Je transmets au livreur"));
+  // Observé en production : « le délai exact dépend de la zone, mais la
+  // livraison est généralement rapide ». Aucun chiffre, donc l'ancrage laisse
+  // passer — et c'est pourtant un engagement sur un délai que personne ne nous
+  // a donné. Le client lit « rapide », reçoit trois jours plus tard.
+  chk("« généralement rapide »", promesseNonTenable("Le délai dépend de la zone, mais la livraison est généralement rapide"));
+  chk("« bientôt »", promesseNonTenable("Tu la reçois bientôt"));
+  chk("« dans les plus brefs délais »", promesseNonTenable("Dans les plus brefs délais"));
   chk("un prix n'est pas une promesse", !promesseNonTenable("La Watch 6 est à 12 000 XAF"));
+  chk("les frais seuls passent", !promesseNonTenable("On livre à Douala pour 1000 XAF"));
   chk("un horaire n'est pas une promesse", !promesseNonTenable("On ouvre à 8h"));
   chk("montrer n'est pas une promesse", !promesseNonTenable("Voici nos montres disponibles"));
 

@@ -178,6 +178,10 @@ function Sidebar({ collapsedProp, onToggle, isDesktop, mobileOpen, onCloseMobile
             // Les modèles approuvés par WhatsApp : le seul moyen d'écrire au
             // client passé 24 h sans nouvelle de lui.
             { href: "/dashboard/templates", label: "Modèles de message", icon: <MessageSquare className="w-3.5 h-3.5" />, active: pathname === "/dashboard/templates" },
+            // Indispensable, et absente jusqu'ici : c'est le SEUL endroit où
+            // l'on peut rendre la parole à Camille après une réclamation.
+            // Sans elle, un client restait muet pour toujours.
+            { href: "/dashboard/complaints", label: "Réclamations", icon: <MessageSquare className="w-3.5 h-3.5" />, active: pathname === "/dashboard/complaints" },
             ...(activeAgentId
               ? [{ href: `/dashboard/${activeAgentId}/suivi`, label: "Suivi des livraisons", icon: <Route className="w-3.5 h-3.5" />, active: pathname.endsWith("/suivi") }]
               : []),
