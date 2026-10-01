@@ -111,6 +111,22 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
 
   chk("« bonjour » n'ouvre rien", !veutToutVoir("bonjour"));
   chk("restauration : « le menu » ouvre la carte", veutToutVoir("je veux le menu", true));
+
+  // Message réel reçu sur le numéro Buyticle : « avec » pour « avez », pas
+  // d'apostrophe à « quest ». La demande la plus explicite qu'un client puisse
+  // faire — et il recevait « Je n'ai pas trouvé » avec sa faute tronquée.
+  chk("« quest ce que vous avec comme produit a vendre »", veutToutVoir("quest ce que vous avec comme produit a vendre"));
+  chk("« qu est ce que vous vendez »", veutToutVoir("qu est ce que vous vendez"));
+  chk("« c'est quoi vos produits »", veutToutVoir("c'est quoi vos produits"));
+  chk("« vous avez quoi en stock »", veutToutVoir("vous avez quoi en stock"));
+  chk("« quels articles disponibles »", veutToutVoir("quels articles disponibles"));
+  chk("« je veux voir la boutique »", veutToutVoir("je veux voir la boutique"));
+  chk("« c'est quoi les prix »", veutToutVoir("c est quoi les prix"));
+  // Et l'inverse : une offre générique ne doit pas avaler une recherche nommée.
+  chk("« t'as des freepods ? » reste une recherche", !veutToutVoir("t as des freepods"));
+  chk("« le prix de la montre oraimo » reste une recherche", !veutToutVoir("la montre oraimo"));
+  chk("resto : « vous avez quoi comme plat »", veutToutVoir("vous avez quoi comme plat", true));
+  chk("resto : « je veux du poulet » reste une recherche", !veutToutVoir("je veux du poulet", true));
 }
 
 // ═══ lib/orders — les heures d'ouverture en texte libre ═════════════════════

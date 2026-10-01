@@ -384,6 +384,18 @@ export async function repondreBoutique(
         trouves.length > 1 ? "Voilà ce qui correspond 👇" : ""
       );
     }
+    // Rien trouvé, mais le client parle visiblement d'achat : on montre ce
+    // qu'on a. Répondre « je n'ai pas trouvé » à un acheteur en main, avec un
+    // catalogue plein, c'est perdre la vente pour un mot mal orthographié.
+    if (prods.length && !/^(merci|ok|okay|okey|dac|daccord|bien|super|a plus|bye|au revoir|oui|non)\b/.test(t)) {
+      return montrerVitrine(
+        ctx, prods,
+        resto ? "Notre carte" : "Notre boutique",
+        resto
+          ? "Je n'ai pas trouvé ça 🤔 Voilà ce qu'on propose 🍽️"
+          : "Je n'ai pas trouvé exactement ça 🤔 Voilà ce qu'on a en ce moment 🛍️"
+      );
+    }
   }
 
   // 8. Accueil et repli — tous deux mènent quelque part, jamais à un cul-de-sac.
@@ -394,7 +406,7 @@ export async function repondreBoutique(
     phone,
     salut || !t
       ? accueil
-      : `Je n'ai pas trouvé « ${msg.text.slice(0, 40)} » 🤔 Regarde ${resto ? "la carte" : "la boutique"}, ou demande un conseiller.`,
+      : `Je n'ai pas bien compris 🤔 Dis-moi ce que tu cherches, ou ${resto ? "regarde la carte" : "regarde la boutique"} 👇`,
     [
       { id: B.catalogue, title: resto ? "Voir la carte" : "Voir la boutique" },
       { id: B.infos, title: "Infos & horaires" },

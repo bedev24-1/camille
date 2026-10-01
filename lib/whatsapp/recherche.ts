@@ -74,17 +74,51 @@ export const PONTS: Record<string, string[]> = {
 export function veutToutVoir(message: string, resto = false): boolean {
   const t = sansAccent(message);
   if (resto) {
-    return /\bmenu\b|la carte|vos plats|qu est ce que vous avez|qu est ce qu il y a|proposez/.test(t);
+    return (
+      /\bmenu\b|la carte|vos plats|vos menus/.test(t) ||
+      (OFFRE_RESTO.test(t) && DEMANDE.test(t)) ||
+      FORT.test(t)
+    );
   }
   const verbeMontrer =
     /\bmontre[rz]?\s+(moi|nous|me|le|la|les|lui|ton|votre|vos|tes)\b/.test(t) &&
     !/\b(une|des|ma|ta|sa|cette|quelle|quelques?|deux|trois)\s+montre/.test(t);
 
-  return (
-    verbeMontrer ||
-    /catalogue|boutique|vos (produits|articles)|qu est ce que vous (avez|vendez)|voir tout|tout voir|tout ce que vous|les prix/.test(t)
-  );
+  return verbeMontrer || FORT.test(t) || (OFFRE.test(t) && DEMANDE.test(t));
 }
+
+/**
+ * Les formulations qui ne laissent aucun doute, même seules.
+ *
+ * `boutique` et `catalogue` sont ici, pas dans OFFRE : « c'est quoi votre
+ * boutique » et « boutique » tout court méritent la même réponse.
+ */
+const FORT =
+  /catalogue|boutique|vitrine|voir tout|tout voir|tout ce que vous|(liste|gamme) (des?|de vos) (produits|articles)|vos? prix|les prix/;
+
+/**
+ * L'offre nommée de façon GÉNÉRIQUE — « produit », « article », « vendre » —
+ * par opposition à un produit précis comme « montre » ou « freepods ».
+ *
+ * C'est la distinction qui décide entre ouvrir la vitrine et chercher. Un
+ * client qui dit « produit » ne désigne rien en particulier : il veut voir.
+ */
+const OFFRE =
+  /\b(produits?|articles?|vendez|vends?|vente|stock|dispo|disponibles?|propose[rz]?|proposez)\b|\ba vendre\b|\ben vente\b/;
+
+const OFFRE_RESTO = /\b(plats?|menus?|carte|manger|mangez|cuisine|servez|propose[rz]?|proposez|dispo)\b/;
+
+/**
+ * La tournure qui accompagne l'offre : une question, ou un souhait.
+ *
+ * `quest` sans apostrophe est volontaire : c'est ce qu'écrivent les clients, et
+ * `sansAccent` ne peut pas deviner l'apostrophe absente. Le message réel qui a
+ * révélé ce défaut était « quest ce que vous avec comme produit a vendre » —
+ * « avec » pour « avez », sans apostrophe. La demande la plus explicite qu'un
+ * client puisse faire, et il recevait « je n'ai pas trouvé ».
+ */
+const DEMANDE =
+  /\b(quest|qu est|cest|c est|quoi|que|qu|quels?|quelles?|avez|avec|aves|as|avoir|voir|veux|cherche|vos|votre|tes|ton|y a|il y a|comme)\b/;
 
 /**
  * Les produits dont le nom recoupe la demande.
