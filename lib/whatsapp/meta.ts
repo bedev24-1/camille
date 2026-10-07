@@ -104,6 +104,24 @@ export function sendImage(to: string, url: string, caption?: string): Promise<Me
 }
 
 /**
+ * Un document (bon de commande, facture…), par URL publique.
+ *
+ * Même règle que la vidéo : Meta télécharge lui-même le fichier, il doit donc
+ * être joignable sans authentification. Le nom de fichier est celui que le
+ * client verra dans la conversation.
+ */
+export function sendDocument(to: string, url: string, filename: string, caption?: string): Promise<MetaResult> {
+  return send(to, {
+    type: "document",
+    document: {
+      link: url,
+      filename: String(filename || "document.pdf").slice(0, 240),
+      ...(caption ? { caption: caption.slice(0, 1024) } : {}),
+    },
+  });
+}
+
+/**
  * Une vidéo, par URL publique.
  *
  * Meta la télécharge lui-même : l'URL doit être joignable sans

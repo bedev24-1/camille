@@ -17,9 +17,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/auth-server";
 import { query } from "@/lib/db";
 import { notifyUser } from "@/lib/fcm";
-
-const CORE_URL = (process.env.CAMILLE_CORE_URL ?? "https://camille-core.vps.buyticle.com").replace(/\/$/, "");
-const CORE_KEY = process.env.CAMILLE_CORE_API_KEY ?? "camille-core-secret";
+import { envoyerTexte } from "@/lib/whatsapp/envoi";
 
 /**
  * Prévient le client sur WhatsApp.
@@ -27,20 +25,12 @@ const CORE_KEY = process.env.CAMILLE_CORE_API_KEY ?? "camille-core-secret";
  * Le commerçant prenait sa réclamation en charge, et le client n'en savait
  * rien : il attendait sans savoir si quelqu'un l'avait lu. Ne lève jamais —
  * un message qui ne part pas ne doit pas empêcher de traiter le dossier.
+ * Le transport (camille-core ou Meta) suit l'agent : cf. lib/whatsapp/envoi.ts.
  */
 async function tellClient(agentId: string, phone: string, text: string) {
   if (!phone) return;
-  try {
-    const s = await query(
-      "SELECT session_name FROM camille.whatsapp_sessions WHERE agent_id = $1 LIMIT 1",
-      [agentId]
-    );
-    await fetch(`${CORE_URL}/api/sendText`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Api-Key": CORE_KEY },
-      body: JSON.stringify({ chatId: phone, session: s.rows[0]?.session_name || "default", text }),
-    });
-  } catch { /* le client sera prévenu par le commerçant lui-même */ }
+  const r = await envoyerTexte(agentId, phone, text);
+  if (!r.ok) console.warn(`[complaints] client non prévenu (${r.transport}) :`, r.error);
 }
 
 /** Libellés lisibles : le workflow envoie une intention, pas une phrase. */
