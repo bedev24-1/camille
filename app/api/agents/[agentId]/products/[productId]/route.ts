@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/auth-server";
 import { query } from "@/lib/db";
 import { pousserUn, retirerUn } from "@/lib/whatsapp/catalogue-sync";
+import { idsAttendus, type AxeVariante } from "@/lib/whatsapp/variantes";
 import { coerce } from "@/lib/productFields";
 
 type RouteContext = { params: Promise<{ agentId: string; productId: string }> };
@@ -83,6 +84,7 @@ export async function PATCH(req: NextRequest, { params }: RouteContext) {
     stock: maj.stock != null ? Number(maj.stock) : null,
     category: maj.category as string | null,
     active: maj.active as boolean | null,
+    variants: Array.isArray(maj.variants) ? (maj.variants as AxeVariante[]) : null,
   }).catch(() => {});
 
   return NextResponse.json({ product: maj });
@@ -93,19 +95,29 @@ export async function DELETE(req: NextRequest, { params }: RouteContext) {
   if (!(await assertOwner(req, agentId))) {
     return NextResponse.json({ error: "Non autorisé" }, { status: 401 });
   }
-  // On lit le lien AVANT de supprimer : après, on ne saurait plus quel article
-  // retirer chez Meta, et il y resterait proposable à la vente.
-  let lien: string | null = null;
+  // On lit le lien AVANT de supprimer : après, on ne saurait plus quels
+  // articles retirer chez Meta, et ils y resteraient proposables à la vente.
+  // Un produit décliné en a plusieurs : « <id>:noir », « <id>:bleu »…
+  const aRetirer: string[] = [];
   try {
     const q = await query(
-      `SELECT COALESCE(to_jsonb(p)->>'meta_retailer_id', id::text) AS lien
+      `SELECT id::text AS id, name, image_url,
+              COALESCE(to_jsonb(p)->>'meta_retailer_id', id::text) AS lien,
+              COALESCE(to_jsonb(p)->'variants', '[]'::jsonb) AS variants
          FROM camille.products p WHERE id = $1 AND agent_id = $2`,
       [productId, agentId]
     );
-    lien = (q.rows[0]?.lien as string) || null;
-  } catch { /* colonne absente : l'identifiant Camille sert de repli */ }
+    const row = q.rows[0];
+    if (row) {
+      aRetirer.push(String(row.lien), String(row.id));
+      aRetirer.push(...idsAttendus(
+        { id: String(row.id), name: String(row.name), image_url: row.image_url },
+        Array.isArray(row.variants) ? (row.variants as AxeVariante[]) : null
+      ));
+    }
+  } catch { /* lecture impossible : l'identifiant Camille sert de repli */ aRetirer.push(productId); }
 
   await query("DELETE FROM camille.products WHERE id = $1 AND agent_id = $2", [productId, agentId]);
-  retirerUn(lien).catch(() => {});
+  retirerUn([...new Set(aRetirer)]).catch(() => {});
   return NextResponse.json({ success: true });
 }

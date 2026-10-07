@@ -237,3 +237,47 @@ function nomCommun(membres: ItemMeta[]): string {
   }
   return noms[0];
 }
+
+// ── Ce qui sert à l'envoi, à la commande et au ménage ───────────────────────
+
+/**
+ * Le retailer_id à MONTRER pour ce produit.
+ *
+ * Dès qu'un produit est éclaté en variations, Meta ne connaît plus l'article
+ * « parent » : seulement « <id>:noir », « <id>:bleu »… Envoyer l'identifiant
+ * du parent donnait « product not found ». On montre donc la première
+ * variation — WhatsApp affiche alors la fiche avec son sélecteur de variantes.
+ */
+export function retailerAffiche(
+  produit: { id: string; name: string; image_url?: string | null },
+  axes: AxeVariante[] | null | undefined
+): string {
+  return articlesPour(produit, axes).articles[0]?.retailerId || produit.id;
+}
+
+/** Tous les retailer_id que ce produit doit avoir chez Meta. */
+export function idsAttendus(
+  produit: { id: string; name: string; image_url?: string | null },
+  axes: AxeVariante[] | null | undefined
+): string[] {
+  return articlesPour(produit, axes).articles.map((a) => a.retailerId);
+}
+
+/**
+ * Le libellé de la variation commandée (« Noir », « 42 »…), ou null.
+ *
+ * Une ligne de commande « Montre » sans « Noir » oblige le commerçant à
+ * rappeler le client pour savoir laquelle préparer.
+ */
+export function libelleVariante(retailerId: string, axes: AxeVariante[] | null | undefined): string | null {
+  const i = String(retailerId || "").indexOf(":");
+  if (i === -1) return null;
+  const s = retailerId.slice(i + 1);
+  for (const axe of Array.isArray(axes) ? axes : []) {
+    for (const o of axe?.options || []) {
+      const v = valeurOption(o);
+      if (v && slug(v) === s) return v;
+    }
+  }
+  return null;
+}

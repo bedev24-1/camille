@@ -60,7 +60,7 @@ import { tracer, sessionMeta, type Contexte } from "./handle";
 import { sansAccent, chercher, veutToutVoir, estUneQuestion } from "./recherche";
 import { lirePrix } from "./prix";
 import { formatVitrine, formatNaturel, noterEnvoi } from "./repetition";
-import { produitParent } from "./variantes";
+import { libelleVariante, produitParent, retailerAffiche, type AxeVariante } from "./variantes";
 import {
   resumeMemoire, fusionnerNotes, faitsDesAchats, MAX_NOTES,
   type Souvenir,
@@ -108,6 +108,8 @@ export type Produit = {
   stock: number | null;
   image_url: string | null;
   retailerId: string;
+  /** Les axes de variation Camille (null pour un article lu chez Meta). */
+  variants?: AxeVariante[] | null;
 };
 
 function money(n: number, cur = "XAF"): string {
@@ -134,7 +136,8 @@ async function catalogue(agentId: string): Promise<Produit[]> {
   try {
     const r = await query(
       `SELECT id, name, price, COALESCE(currency,'XAF') AS currency, category, stock, image_url,
-              to_jsonb(p)->>'meta_retailer_id' AS retailer
+              to_jsonb(p)->>'meta_retailer_id' AS retailer,
+              COALESCE(to_jsonb(p)->'variants', '[]'::jsonb) AS variants
          FROM camille.products p
         WHERE agent_id = $1 AND active = true
         ORDER BY sort_order ASC, created_at DESC
@@ -151,7 +154,17 @@ async function catalogue(agentId: string): Promise<Produit[]> {
         category: (x.category as string) || null,
         stock: x.stock != null ? Number(x.stock) : null,
         image_url: (x.image_url as string) || null,
-        retailerId: String(x.retailer),
+        variants: Array.isArray(x.variants) ? (x.variants as AxeVariante[]) : null,
+        // Un produit publié avec ses variations n'existe chez Meta QUE sous
+        // « <id>:<option> » : l'identifiant du parent donnerait « product not
+        // found ». Un article importé de Meta garde, lui, son propre identifiant.
+        retailerId:
+          String(x.retailer) === String(x.id)
+            ? retailerAffiche(
+                { id: String(x.id), name: String(x.name), image_url: (x.image_url as string) || null },
+                Array.isArray(x.variants) ? (x.variants as AxeVariante[]) : null
+              )
+            : String(x.retailer),
       }))
       .filter((p) => p.stock == null || p.stock > 0);
     if (mappes.length) return mappes;
@@ -173,8 +186,19 @@ async function catalogue(agentId: string): Promise<Produit[]> {
       `[boutique] ${ecartes.length} produit(s) en attente d'approbation WhatsApp, non proposés : ${ecartes.join(", ")}`
     );
   }
+  // Les variations d'un même produit (même item_group_id) ne sont montrées
+  // qu'UNE fois : WhatsApp affiche le sélecteur de variantes dans la fiche.
+  // Sans ça, « Watch 6 — Noir », « — Bleu », « — Rouge » défilaient comme
+  // trois produits différents.
+  const groupesVus = new Set<string>();
   return m.items
     .filter((it) => it.availability !== "out of stock" && it.sendable !== false)
+    .filter((it) => {
+      if (!it.item_group_id) return true;
+      if (groupesVus.has(it.item_group_id)) return false;
+      groupesVus.add(it.item_group_id);
+      return true;
+    })
     .map((it) => {
       // Meta renvoie le prix FORMATÉ, et son format dépend de la devise :
       // « 9 000 FCFA » sans décimales, « 12,50 EUR » avec. On le LIT, on ne
@@ -440,7 +464,7 @@ async function envoyerTuto(ctx: Contexte, resto: boolean) {
 // que de perdre la commande.
 
 type LignePanier = {
-  productId?: string; name: string; qty: number; price: number; currency: string; image?: string;
+  productId?: string; name: string; variant?: string; qty: number; price: number; currency: string; image?: string;
 };
 type PanierEnAttente = {
   etape: "mode" | "adresse"; items: LignePanier[]; note: string; contactName: string;
@@ -500,7 +524,7 @@ async function oublierPanier(agentId: string, phone: string) {
 
 function recapPanier(items: LignePanier[], cur: string): { texte: string; total: number } {
   const total = items.reduce((t, l) => t + (l.price || 0) * (l.qty || 1), 0);
-  return { texte: items.map((l) => `• ${l.qty} × ${l.name}`).join("\n"), total };
+  return { texte: items.map((l) => `• ${l.qty} × ${l.name}${l.variant ? ` (${l.variant})` : ""}`).join("\n"), total };
 }
 
 /** Le panier natif reçu : on le met de côté et on demande comment le recevoir. */
@@ -525,6 +549,9 @@ async function recevoirPanier(ctx: Contexte) {
       // c'est lui qui permet de décompter le stock.
       productId: p && p.id !== p.retailerId ? p.id : undefined,
       name: p?.name || it.retailerId,
+      // La variation choisie (« Noir », « 42 »…) : sans elle, le commerçant
+      // ne sait pas laquelle préparer.
+      variant: libelleVariante(it.retailerId, p?.variants) || undefined,
       qty: Math.max(1, it.quantity),
       price: it.price || p?.price || 0,
       currency: it.currency || p?.currency || agent.currency || "XAF",
