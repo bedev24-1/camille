@@ -427,7 +427,83 @@ async function envoyerTuto(ctx: Contexte, resto: boolean) {
 );
 }
 
-/** Le panier natif reçu : on enregistre la commande, puis on demande où livrer. */
+// ── Le panier, du catalogue à la commande ──────────────────────────────────
+//
+// Un panier reçu ne devient une commande qu'une fois COMPLET : mode de
+// réception choisi, et adresse connue s'il faut livrer. Avant, la commande
+// était créée tout de suite, sans adresse ni frais de livraison, et la position
+// se greffait ensuite sur « la dernière commande » du client. Sur ordinateur,
+// le bouton de position ne s'affiche pas : la commande restait sans adresse.
+//
+// Le panier attend donc dans camille.meta_paniers (migration_meta_paniers.sql).
+// Sur une base sans cette table, on retombe sur l'ancien comportement plutôt
+// que de perdre la commande.
+
+type LignePanier = {
+  productId?: string; name: string; qty: number; price: number; currency: string; image?: string;
+};
+type PanierEnAttente = {
+  etape: "mode" | "adresse"; items: LignePanier[]; note: string; contactName: string;
+};
+
+/** Un panier n'attend pas indéfiniment : au-delà, il ne correspond plus à rien. */
+const PANIER_TTL = "2 hours";
+
+async function garderPanier(agentId: string, phone: string, p: PanierEnAttente): Promise<boolean> {
+  try {
+    await query(
+      `INSERT INTO camille.meta_paniers (agent_id, phone, etape, items, note, contact_name, created_at)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, now())
+       ON CONFLICT (agent_id, phone) DO UPDATE
+         SET etape = EXCLUDED.etape, items = EXCLUDED.items, note = EXCLUDED.note,
+             contact_name = EXCLUDED.contact_name, created_at = now()`,
+      [agentId, phone, p.etape, JSON.stringify(p.items), p.note || null, p.contactName || null]
+    );
+    return true;
+  } catch (e) {
+    console.warn("[boutique] panier non mis en attente (migration_meta_paniers.sql ?) :", (e as Error).message);
+    return false;
+  }
+}
+
+async function lirePanier(agentId: string, phone: string): Promise<PanierEnAttente | null> {
+  try {
+    const r = await query(
+      `SELECT etape, items, note, contact_name FROM camille.meta_paniers
+        WHERE agent_id = $1 AND phone = $2 AND created_at > now() - interval '${PANIER_TTL}'`,
+      [agentId, phone]
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return {
+      etape: row.etape === "adresse" ? "adresse" : "mode",
+      items: (row.items || []) as LignePanier[],
+      note: row.note || "",
+      contactName: row.contact_name || "",
+    };
+  } catch {
+    return null; // table absente : aucun panier en attente
+  }
+}
+
+async function etapePanier(agentId: string, phone: string, etape: "mode" | "adresse") {
+  await query(
+    "UPDATE camille.meta_paniers SET etape = $3 WHERE agent_id = $1 AND phone = $2",
+    [agentId, phone, etape]
+  ).catch(() => {});
+}
+
+async function oublierPanier(agentId: string, phone: string) {
+  await query("DELETE FROM camille.meta_paniers WHERE agent_id = $1 AND phone = $2", [agentId, phone])
+    .catch(() => {});
+}
+
+function recapPanier(items: LignePanier[], cur: string): { texte: string; total: number } {
+  const total = items.reduce((t, l) => t + (l.price || 0) * (l.qty || 1), 0);
+  return { texte: items.map((l) => `• ${l.qty} × ${l.name}`).join("\n"), total };
+}
+
+/** Le panier natif reçu : on le met de côté et on demande comment le recevoir. */
 async function recevoirPanier(ctx: Contexte) {
   const { agent, msg, phone } = ctx;
   const items = msg.order?.items || [];
@@ -436,7 +512,7 @@ async function recevoirPanier(ctx: Contexte) {
   const prods = await catalogue(agent.id);
   const parRetailer = new Map(prods.map((p) => [p.retailerId, p]));
 
-  const lignes = items.map((it) => {
+  const lignes: LignePanier[] = items.map((it) => {
     // Une commande de VARIATION porte « <produit>:<option> ». C'est le PARENT
     // qui tient le stock : sans ce repli, une commande de variation ne
     // décompterait rien — le défaut d'origine, rouvert par une autre porte.
@@ -452,84 +528,133 @@ async function recevoirPanier(ctx: Contexte) {
       qty: Math.max(1, it.quantity),
       price: it.price || p?.price || 0,
       currency: it.currency || p?.currency || agent.currency || "XAF",
-      // La photo du catalogue. Oubliée jusqu'ici : le vendeur voyait une
-      // vignette vide dans ses commandes, alors que l'image était déjà lue
-      // par `catalogue()`. Elle n'est pas décorative — c'est ce qui permet de
-      // reconnaître l'article d'un coup d'œil au moment de le préparer.
+      // La photo du catalogue : c'est ce qui permet au vendeur de reconnaître
+      // l'article d'un coup d'œil au moment de le préparer.
       image: p?.image_url || undefined,
     };
   });
 
-  const total = lignes.reduce((t, l) => t + (l.price || 0) * (l.qty || 1), 0);
-  const cur = lignes[0]?.currency || "XAF";
+  const panier: PanierEnAttente = {
+    etape: "mode", items: lignes, note: msg.order?.note || "", contactName: msg.contactName || "",
+  };
 
+  // Il vient de commander : il sait commander. Lui proposer un tutoriel au
+  // message suivant serait absurde.
+  await marquerAccueilli(agent.id, phone);
+
+  // Pas de livraison chez ce commerçant : rien à demander, c'est un retrait.
+  if (!agent.delivery_enabled) return finaliserPanier(ctx, panier, { mode: "retrait" });
+
+  // Base sans table d'attente : l'ancien parcours (commande puis position).
+  if (!(await garderPanier(agent.id, phone, panier))) {
+    await finaliserPanier(ctx, panier, { mode: "livraison" });
+    return demanderPosition(ctx);
+  }
+
+  const cur = lignes[0]?.currency || "XAF";
+  const { texte, total } = recapPanier(lignes, cur);
+  const frais = agent.delivery_fee ? Number(agent.delivery_fee) : 0;
+  // Des boutons de réponse, pas le bouton de position : ils s'affichent sur
+  // téléphone ET sur ordinateur.
+  const r = await meta.sendButtons(
+    phone,
+    `🛒 Ton panier\n\n${texte}\n\nSous-total : *${money(total, cur)}*` +
+      (frais ? `\n_Livraison : ${money(frais, cur)}_` : "") +
+      `\n\nComment veux-tu le recevoir ?`,
+    [
+      { id: B.livrer, title: "🛵 Me faire livrer" },
+      { id: B.retirer, title: "🏪 Je passe retirer" },
+    ]
+  );
+  if (!r.ok) {
+    console.error("[boutique] boutons livraison/retrait refusés :", r.error);
+    await meta.sendText(phone, "Écris *livrer* pour te faire livrer, ou *retirer* pour passer le chercher 🙂");
+  }
+  await tracer(agent.id, phone, "assistant", `[panier en attente] ${money(total, cur)}`);
+}
+
+/** Le panier devient une commande, avec tout ce qu'il faut pour la préparer. */
+async function finaliserPanier(
+  ctx: Contexte,
+  panier: PanierEnAttente,
+  opts: { mode: "livraison" | "retrait"; lat?: number; lng?: number; adresse?: string }
+) {
+  const { agent, phone } = ctx;
+  const livraison = opts.mode === "livraison";
   const res = await createOrder({
     agentId: agent.id,
-    items: lignes,
+    items: panier.items,
     phone,
-    customerName: msg.contactName || "",
-    note: msg.order?.note || "",
+    customerName: panier.contactName,
+    note: panier.note,
     source: "whatsapp",
     session: sessionMeta(agent.id),
+    fulfillment: opts.mode,
+    deliveryFee: livraison && agent.delivery_enabled ? Number(agent.delivery_fee) || 0 : 0,
+    address: opts.adresse,
+    lat: opts.lat,
+    lng: opts.lng,
   });
 
   if ("ok" in res && res.ok === false) {
+    // L'erreur technique va au journal, pas au client.
     console.error("[boutique] commande refusée :", res.error);
     await meta.sendText(
       phone,
-      `Je n'ai pas pu enregistrer ta commande 🙏\n${res.error}\n\nDis-moi *conseiller* et quelqu'un s'en occupe tout de suite.`
+      "Je n'ai pas pu enregistrer ta commande 🙏 Dis-moi *conseiller* et quelqu'un s'en occupe tout de suite."
     );
     return;
   }
+  await oublierPanier(agent.id, phone);
 
-  const ref = (res as { ref?: string }).ref || "";
-  const recap = lignes.map((l) => `• ${l.qty} × ${l.name}`).join("\n");
+  const c = res as { ref?: string; subtotal?: number; deliveryFee?: number; total?: number; currency?: string };
+  const cur = c.currency || panier.items[0]?.currency || "XAF";
+  const { texte } = recapPanier(panier.items, cur);
+  const lieu = livraison
+    ? opts.lat != null && opts.lng != null
+      ? "📍 Position reçue"
+      : opts.adresse ? `📍 ${opts.adresse}` : ""
+    : "🏪 Retrait en boutique";
 
   await meta.sendText(
     phone,
-    `✅ C'est noté${ref ? ` — commande *${ref}*` : ""}\n\n${recap}\n\n` +
-      `Total : *${money(total, cur)}*` +
-      (agent.delivery_enabled && agent.delivery_fee ? `\n_Livraison : ${money(Number(agent.delivery_fee), cur)}_` : "")
+    `✅ C'est noté${c.ref ? ` — commande *${c.ref}*` : ""}\n\n${texte}\n\n` +
+      (c.deliveryFee ? `Sous-total : ${money(Number(c.subtotal) || 0, cur)}\nLivraison : ${money(c.deliveryFee, cur)}\n` : "") +
+      `Total : *${money(Number(c.total) || 0, cur)}*` +
+      (lieu ? `\n${lieu}` : "") +
+      (livraison ? "\n\nOn s'en occupe, tu es prévenu dès que ça part 🛵" : "\n\nOn te prépare ça 🙌")
   );
+  await tracer(agent.id, phone, "assistant", `[commande] ${c.ref || ""} ${opts.mode} ${money(Number(c.total) || 0, cur)}`);
 
-  await tracer(agent.id, phone, "assistant", `[commande] ${ref} ${money(total, cur)}`);
-
-  // Il vient de commander : il sait commander. Lui proposer un tutoriel au
-  // message suivant serait absurde, et c'est le genre de détail qui fait dire
-  // « c'est un robot ».
-  await marquerAccueilli(agent.id, phone);
-
-  if (agent.delivery_enabled) return demanderPosition(ctx);
-  await meta.sendText(phone, "On prépare ça, tu peux passer le retirer 🙌");
-  await montrerOuNousSommes(ctx);
+  if (!livraison) await montrerOuNousSommes(ctx);
 }
 
 /**
- * La position, par le composant natif.
+ * Où livrer ?
  *
- * Le client voit un bouton « Envoyer la position actuelle » : un appui, et on a
- * des coordonnées GPS exactes. Avant, on lui écrivait « le trombone 📎 puis
- * Position » — on lui expliquait le fonctionnement de son propre téléphone, et
- * on récupérait au mieux un nom de quartier qui ne sert à rien à un livreur.
- *
- * Le repli compte autant : si Meta refuse le composant, on repasse au texte
- * plutôt que de laisser la commande sans adresse.
+ * Sur téléphone, le bouton natif donne des coordonnées GPS exactes en un appui.
+ * Sur ordinateur (WhatsApp Web / Desktop), ce bouton NE S'AFFICHE PAS : on dit
+ * donc aussi, en texte, qu'il suffit d'écrire son adresse. Les deux réponses
+ * sont acceptées.
  */
 async function demanderPosition(ctx: Contexte) {
   const { agent, phone } = ctx;
+  // Un panier en attente passe à l'étape « adresse » : la prochaine position
+  // ou adresse écrite le complétera. Sans panier, la requête ne touche rien.
+  await etapePanier(agent.id, phone, "adresse");
   const r = await meta.sendLocationRequest(
     phone,
     "Où est-ce qu'on te livre ? 📍\n\n" +
       "Touche le bouton ci-dessous et j'ai le point exact.\n" +
       "_Tu préfères passer retirer ? Écris *retirer*._"
   );
-  if (!r.ok) {
-    console.error("[boutique] demande de position native refusée :", r.error);
-    await meta.sendText(
-      phone,
-      "Où est-ce qu'on te livre ? 📍 Partage ta position, ou écris ton quartier et un repère."
-    );
-  }
+  if (!r.ok) console.error("[boutique] demande de position native refusée :", r.error);
+  await meta.sendText(
+    phone,
+    r.ok
+      ? "💻 Sur ordinateur, le bouton n'apparaît pas : écris simplement ton *quartier et un repère* (ex. : Bonamoussadi, carrefour Kotto)."
+      : "Où est-ce qu'on te livre ? 📍 Partage ta position, ou écris ton *quartier et un repère* (ex. : Bonamoussadi, carrefour Kotto)."
+  );
   await tracer(agent.id, phone, "assistant", "[demande position]");
 }
 
@@ -825,8 +950,17 @@ export async function repondreBoutique(
   // 1. Un panier natif : c'est une commande, pas une phrase à comprendre.
   if (msg.type === "order") return recevoirPanier(ctx);
 
-  // 2. Une position partagée : elle complète la dernière commande.
+  // Un panier attend-il son mode de réception ou son adresse ?
+  const enAttente = await lirePanier(agent.id, phone);
+
+  // 2. Une position partagée : elle complète le panier en attente, sinon la
+  //    dernière commande (commandes passées avant ce parcours).
   if (msg.type === "location" && msg.location) {
+    if (enAttente) {
+      return finaliserPanier(ctx, enAttente, {
+        mode: "livraison", lat: msg.location.lat, lng: msg.location.lng,
+      });
+    }
     let ref = "";
     try {
       const r = await query(
@@ -834,6 +968,9 @@ export async function repondreBoutique(
           WHERE id = (SELECT id FROM camille.orders
                        WHERE agent_id = $3
                          AND regexp_replace(COALESCE(contact_phone,''), '[^0-9]', '', 'g') = $4
+                         -- une position ne complète qu'une commande RÉCENTE :
+                         -- jamais celle d'il y a trois semaines.
+                         AND created_at > now() - interval '6 hours'
                        ORDER BY created_at DESC LIMIT 1)
           RETURNING COALESCE(to_jsonb(orders)->>'ref', '') AS ref`,
         [msg.location.lat, msg.location.lng, agent.id, phone]
@@ -918,6 +1055,7 @@ export async function repondreBoutique(
     }
     if (id === B.livrer) return demanderPosition(ctx);
     if (id === B.retirer) {
+      if (enAttente) return finaliserPanier(ctx, enAttente, { mode: "retrait" });
       await meta.sendText(phone, "C'est noté, on te garde ça 👌");
       await montrerOuNousSommes(ctx);
       return;
@@ -932,6 +1070,31 @@ export async function repondreBoutique(
   }
 
   const t = sansAccent(msg.text);
+
+  // 3 bis. Un panier attend : les réponses courtes à « livraison ou retrait ? »
+  // et l'adresse écrite (le seul moyen sur ordinateur) passent AVANT la
+  // compréhension — une adresse n'est pas une question à interpréter.
+  if (enAttente && msg.text.trim()) {
+    if (/conseiller|humain|quelqu un|une personne|parler a|responsable|patron|gerant/.test(t)) {
+      return passerLaMain(ctx);
+    }
+    if (/\bannule|\bannuler|laisse tomber|je ne veux plus|j en veux plus/.test(t)) {
+      await oublierPanier(agent.id, phone);
+      await meta.sendText(phone, "D'accord, j'ai annulé ce panier 👍 Je reste là si tu changes d'avis.");
+      return;
+    }
+    if (/^(retirer|retrait|je viens|je passe|sur place|a emporter|take away)\b/.test(t)) {
+      return finaliserPanier(ctx, enAttente, { mode: "retrait" });
+    }
+    if (/^(livrer|livraison|me faire livrer|livre moi|faites moi livrer)\b/.test(t)) {
+      return demanderPosition(ctx);
+    }
+    if (enAttente.etape === "adresse" && msg.text.trim().length >= 4) {
+      return finaliserPanier(ctx, enAttente, {
+        mode: "livraison", adresse: msg.text.trim().replace(/\s+/g, " ").slice(0, 200),
+      });
+    }
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // 4. LA COMPRÉHENSION. C'est la voie normale, pas une option.
