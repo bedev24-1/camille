@@ -10,11 +10,10 @@
 //   BUYFACT_API_KEY   optionnelle, doit correspondre à celle de buyfacturation
 // ─────────────────────────────────────────────────────────────────────────────
 import { query } from "@/lib/db";
+import { envoyerDocument, envoyerTexte } from "@/lib/whatsapp/envoi";
 
 const BUYFACT_URL = (process.env.BUYFACT_URL ?? "https://buyfacturation-jdbf.vercel.app").replace(/\/$/, "");
 const BUYFACT_KEY = process.env.BUYFACT_API_KEY ?? "";
-const CORE_URL = (process.env.CAMILLE_CORE_URL ?? "https://camille-core.vps.buyticle.com").replace(/\/$/, "");
-const CORE_KEY = process.env.CAMILLE_CORE_API_KEY ?? "camille-core-secret";
 
 type OrderItem = { name?: string; variant?: string; qty?: number; price?: number };
 
@@ -202,28 +201,15 @@ export async function sendOrderDocument(
     (Number(o.total) > 0 ? `Total à payer : ${montant(Number(o.total))}\n` : "") +
     `\nGarde ce document, il fait référence 🙌`;
 
-  try {
-    const res = await fetch(`${CORE_URL}/api/sendFile`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Api-Key": CORE_KEY },
-      body: JSON.stringify({
-        chatId,
-        session: o.session_name || "default",
-        file: {
-          url: pdfUrl,
-          name: `${doc.number || number}.pdf`,
-          mimeType: "application/pdf",
-        },
-        caption,
-      }),
-    });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok || j?.success === false) {
-      return { ok: false, reason: j?.error || `envoi WhatsApp refusé (${res.status})`, number, pdfUrl };
-    }
-    if (j?.skipped) return { ok: false, reason: "envoi ignoré par camille-core", number, pdfUrl };
-  } catch (e) {
-    return { ok: false, reason: `camille-core injoignable : ${(e as Error).message}`, number, pdfUrl };
+  // Le transport (camille-core ou Meta) suit l'agent : cf. lib/whatsapp/envoi.ts.
+  const envoi = await envoyerDocument(
+    String(o.agent_id),
+    chatId,
+    { url: pdfUrl, name: `${doc.number || number}.pdf`, mimeType: "application/pdf", caption },
+    { session: (o.session_name as string) || null }
+  );
+  if (!envoi.ok) {
+    return { ok: false, reason: envoi.error || "envoi WhatsApp refusé", number, pdfUrl };
   }
 
   return { ok: true, number: doc.number || number, pdfUrl };
@@ -265,19 +251,10 @@ export async function sendThankYou(orderId: string): Promise<SendResult> {
     `Et au moindre souci, écris-moi ici — on répond toujours.\n\n` +
     `À très vite ! 👋`;
 
-  try {
-    const res = await fetch(`${CORE_URL}/api/sendText`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Api-Key": CORE_KEY },
-      body: JSON.stringify({ chatId, session: o.session_name || "default", text }),
-    });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok || j?.success === false) {
-      return { ok: false, reason: j?.error || `envoi refusé (${res.status})` };
-    }
-  } catch (e) {
-    return { ok: false, reason: `camille-core injoignable : ${(e as Error).message}` };
-  }
+  const envoi = await envoyerTexte(String(o.agent_id), chatId, text, {
+    session: (o.session_name as string) || null,
+  });
+  if (!envoi.ok) return { ok: false, reason: envoi.error || "envoi refusé" };
 
   // Marque APRES l'envoi : un echec doit pouvoir etre reessaye.
   try {

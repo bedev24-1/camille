@@ -27,12 +27,11 @@ import { NextRequest } from "next/server";
 import { query } from "@/lib/db";
 import { authenticate, json, preflight } from "@/lib/publicApi";
 import { createOrder, type NewOrderItem } from "@/lib/orders";
+import { envoyerTexte } from "@/lib/whatsapp/envoi";
 import { canAfford, findByCode, post as postLedger, type CompanyAccount } from "@/lib/companyAccounts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-const CORE_URL = (process.env.CAMILLE_CORE_URL ?? "https://camille-core.vps.buyticle.com").replace(/\/$/, "");
-const CORE_KEY = process.env.CAMILLE_CORE_API_KEY ?? "camille-core-secret";
 
 export async function OPTIONS(req: NextRequest) {
   return preflight(req);
@@ -227,25 +226,12 @@ export async function POST(req: NextRequest) {
 
   // Accusé de réception au client sur WhatsApp, exactement comme pour une
   // commande née dans la conversation. Best-effort : la commande existe déjà.
+  // Le transport (camille-core ou Meta) suit l'agent : cf. lib/whatsapp/envoi.ts.
   let notified = false;
-  try {
-    const session = await query(
-      "SELECT session_name FROM camille.whatsapp_sessions WHERE agent_id = $1 LIMIT 1",
-      [auth.key.agent_id]
-    );
-    const sess = session.rows[0]?.session_name;
-    if (sess) {
-      const send = (chatId: string, text: string) =>
-        fetch(`${CORE_URL}/api/sendText`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Api-Key": CORE_KEY },
-          body: JSON.stringify({ chatId, session: sess, text }),
-        });
-      const r1 = await send(phone, created.clientText);
-      notified = r1.ok;
-      if (created.ownerChatId) await send(created.ownerChatId, created.ownerText).catch(() => {});
-    }
-  } catch { /* la commande est enregistrée, c'est l'essentiel */ }
+  const r1 = await envoyerTexte(auth.key.agent_id, phone, created.clientText);
+  notified = r1.ok;
+  if (!r1.ok) console.warn(`[public/orders] client non prévenu (${r1.transport}) :`, r1.error);
+  if (created.ownerChatId) await envoyerTexte(auth.key.agent_id, created.ownerChatId, created.ownerText);
 
   return json({
     ok: true,

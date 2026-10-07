@@ -10,19 +10,46 @@
 // caractères, de quoi vérifier qu'on parle du bon sans pouvoir s'en servir.
 // ─────────────────────────────────────────────────────────────────────────────
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
 import { query } from "@/lib/db";
+import { getAdminFromRequest } from "@/lib/auth-server";
 import { sectorProfile } from "@/lib/sectorProfiles";
 import * as meta from "@/lib/whatsapp/meta";
 import { modeDeVente, type Agent } from "@/lib/whatsapp/handle";
 
+/**
+ * Réservé à l'exploitation. Le diagnostic décrit la configuration Meta, le
+ * catalogue et l'agent : ouvert à tous, il servait de plan à qui voulait
+ * fabriquer de faux messages. Deux façons d'y entrer :
+ *   - une session d'administrateur (is_admin) ;
+ *   - la clé ADMIN_REINDEX_KEY, en en-tête X-Admin-Key ou en ?key=… pour
+ *     l'ouvrir simplement dans un navigateur.
+ */
+async function autorise(req: NextRequest): Promise<boolean> {
+  if (await getAdminFromRequest(req).catch(() => null)) return true;
+  const attendue = process.env.ADMIN_REINDEX_KEY || "";
+  const fournie = req.headers.get("x-admin-key") || req.nextUrl.searchParams.get("key") || "";
+  if (!attendue || !fournie) return false;
+  const a = Buffer.from(fournie);
+  const b = Buffer.from(attendue);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 export async function GET(req: NextRequest) {
+  if (!(await autorise(req))) {
+    return NextResponse.json({ error: "Accès réservé" }, { status: 403 });
+  }
   const problemes: string[] = [];
   const config = meta.metaConfigured();
   if (!config.ok) problemes.push("WHATSAPP_TOKEN ou PHONE_NUMBER_ID absent de l'environnement.");
   if (!process.env.WHATSAPP_VERIFY_TOKEN)
     problemes.push("WHATSAPP_VERIFY_TOKEN absent : Meta ne pourra pas valider l'abonnement au webhook.");
   if (!process.env.WHATSAPP_APP_SECRET)
-    problemes.push("WHATSAPP_APP_SECRET absent : la signature des messages entrants n'est PAS vérifiée. Acceptable pour un test sur ton propre numéro, à ne pas laisser dès qu'un marchand est dessus.");
+    problemes.push(
+      process.env.META_ALLOW_UNSIGNED === "1"
+        ? "WHATSAPP_APP_SECRET absent et META_ALLOW_UNSIGNED=1 : signature NON vérifiée. Réservé à un test sur ton propre numéro."
+        : "WHATSAPP_APP_SECRET absent : en production, le webhook REFUSE tous les messages tant que la clé secrète de l'app Meta n'est pas renseignée."
+    );
 
   // ── L'agent visé ──────────────────────────────────────────────────────────
   const agentId = req.nextUrl.searchParams.get("agentId") || process.env.META_TEST_AGENT_ID || "";
@@ -50,6 +77,8 @@ export async function GET(req: NextRequest) {
       if (!agent) problemes.push(`Agent ${agentId} introuvable dans camille.agents.`);
       else if ((r.rows[0] as { status?: string }).status !== "active")
         problemes.push(`L'agent est en statut « ${(r.rows[0] as { status?: string }).status} » : le webhook le refusera. Passe-le en active.`);
+      if (agent && (r.rows[0] as { transport?: string }).transport !== "meta")
+        problemes.push("L'agent n'est pas en transport « meta » : le webhook ne lui confiera aucun message (UPDATE camille.agents SET transport='meta' …).");
     } catch (e) {
       agentErr = (e as Error).message;
       problemes.push(`Lecture de l'agent impossible : ${agentErr}`);

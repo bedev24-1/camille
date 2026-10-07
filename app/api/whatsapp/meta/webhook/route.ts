@@ -46,13 +46,20 @@ export async function GET(req: NextRequest) {
  * l'agent au nom d'un client. Le secret d'application est le seul élément que
  * Meta et nous partageons.
  *
- * Tant que `WHATSAPP_APP_SECRET` n'est pas renseigné, on laisse passer en le
- * signalant : c'est vivable le temps d'un test sur son propre numéro, et
- * inacceptable dès qu'un marchand est dessus.
+ * Sans `WHATSAPP_APP_SECRET`, on REFUSE en production : sinon n'importe qui
+ * connaissant l'URL peut fabriquer des commandes avec les prix de son choix.
+ * Pour un test sur son propre numéro uniquement, META_ALLOW_UNSIGNED=1 lève
+ * l'interdiction (et le journal le rappelle à chaque message).
  */
 function signatureValide(raw: string, header: string | null): { ok: boolean; why?: string } {
   const secret = process.env.WHATSAPP_APP_SECRET || "";
-  if (!secret) return { ok: true, why: "WHATSAPP_APP_SECRET absent — signature NON vérifiée" };
+  if (!secret) {
+    const tolere =
+      process.env.META_ALLOW_UNSIGNED === "1" || process.env.NODE_ENV !== "production";
+    return tolere
+      ? { ok: true, why: "WHATSAPP_APP_SECRET absent — signature NON vérifiée (toléré : test)" }
+      : { ok: false, why: "WHATSAPP_APP_SECRET absent — message refusé (renseigne la clé secrète de l'app Meta)" };
+  }
   if (!header?.startsWith("sha256=")) return { ok: false, why: "en-tête X-Hub-Signature-256 absent" };
 
   const attendu = "sha256=" + crypto.createHmac("sha256", secret).update(raw, "utf8").digest("hex");
@@ -177,6 +184,11 @@ export async function POST(req: NextRequest) {
   // Le corps brut, et lui seul, permet de vérifier la signature : un
   // re-sérialisé JSON ne donne pas les mêmes octets.
   const raw = await req.text();
+
+  // Une notification Meta pèse quelques Ko. Au-delà d'1 Mo, ce n'est pas Meta.
+  if (raw.length > 1_000_000) {
+    return new NextResponse("Corps trop volumineux", { status: 413 });
+  }
 
   const sig = signatureValide(raw, req.headers.get("x-hub-signature-256"));
   if (!sig.ok) {

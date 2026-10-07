@@ -87,21 +87,35 @@ async function trouverAgent(phoneNumberId: string): Promise<Agent | null> {
     (to_jsonb(a)->>'delivery_fee')::numeric                     AS delivery_fee,
     COALESCE((to_jsonb(a)->>'delivery_enabled')::boolean, true)  AS delivery_enabled`;
 
-  // 1. Par le numéro Meta, quand la colonne est là.
+  // Un agent ne répond par Meta que s'il est ACTIF et marqué `transport='meta'`.
+  // Sans ce second filtre, un agent resté sur camille-core mais qui garde un
+  // meta_phone_number_id répondrait aussi par Meta — deux réponses au client.
+  const eligible = `a.status = 'active' AND COALESCE(to_jsonb(a)->>'transport', 'core') = 'meta'`;
+
+  // 1. Par le numéro Meta qui a reçu le message : le seul critère sûr dès
+  //    qu'il y a plusieurs marchands.
   try {
     const r = await query(
       `SELECT ${champs} FROM camille.agents a
-        WHERE to_jsonb(a)->>'meta_phone_number_id' = $1 AND a.status = 'active' LIMIT 1`,
+        WHERE to_jsonb(a)->>'meta_phone_number_id' = $1 AND ${eligible} LIMIT 1`,
       [phoneNumberId]
     );
     if (r.rows.length) return r.rows[0] as Agent;
   } catch { /* colonne absente : on passe au repli */ }
 
-  // 2. Repli de test, explicite et temporaire.
+  // 2. Repli de test, explicite et temporaire. Il ne sert QUE le numéro de
+  //    l'application (PHONE_NUMBER_ID) : un message arrivé sur le numéro d'un
+  //    autre marchand ne doit jamais être répondu par l'agent de test.
   const test = process.env.META_TEST_AGENT_ID;
   if (!test) return null;
+  if (phoneNumberId && process.env.PHONE_NUMBER_ID && phoneNumberId !== process.env.PHONE_NUMBER_ID) {
+    return null;
+  }
   try {
-    const r = await query(`SELECT ${champs} FROM camille.agents a WHERE a.id = $1 LIMIT 1`, [test]);
+    const r = await query(
+      `SELECT ${champs} FROM camille.agents a WHERE a.id = $1 AND ${eligible} LIMIT 1`,
+      [test]
+    );
     return (r.rows[0] as Agent) || null;
   } catch {
     return null;
@@ -186,9 +200,59 @@ export function modeDeVente(agent: Agent): "restaurant" | "boutique" | "services
   return sertDesRepas(agent.sector) ? "restaurant" : "boutique";
 }
 
+// ── Anti-doublon ────────────────────────────────────────────────────────────
+//
+// Meta peut livrer deux fois le même message. Sans garde, un panier relivré
+// produisait une seconde commande et décomptait le stock une seconde fois.
+// L'identifiant du message (wamid) est réservé en base AVANT tout traitement :
+// le second passage le trouve déjà pris et s'arrête. La base est la seule
+// mémoire qui survit à un redéploiement ; la mémoire locale ne sert que de
+// filet si la table n'existe pas encore (migration_meta_inbound.sql).
+
+const VUS_LOCAL = new Map<string, number>();
+const VUS_TTL_MS = 24 * 3600 * 1000;
+let derniereRaz = 0;
+
+function dejaVuLocal(wamid: string): boolean {
+  const maintenant = Date.now();
+  if (VUS_LOCAL.size > 5000) {
+    for (const [k, t] of VUS_LOCAL) if (maintenant - t > VUS_TTL_MS) VUS_LOCAL.delete(k);
+  }
+  if (VUS_LOCAL.has(wamid)) return true;
+  VUS_LOCAL.set(wamid, maintenant);
+  return false;
+}
+
+/** true si ce message a DÉJÀ été pris en charge (et ne doit pas l'être à nouveau). */
+export async function dejaTraite(wamid: string): Promise<boolean> {
+  if (!wamid) return false;
+  try {
+    const r = await query(
+      `INSERT INTO camille.meta_inbound (wamid) VALUES ($1)
+       ON CONFLICT (wamid) DO NOTHING RETURNING wamid`,
+      [wamid]
+    );
+    // Purge des anciens identifiants, une fois par heure au plus : Meta ne
+    // relivre pas un message au-delà de quelques jours.
+    if (Date.now() - derniereRaz > 3600 * 1000) {
+      derniereRaz = Date.now();
+      query(`DELETE FROM camille.meta_inbound WHERE received_at < now() - interval '7 days'`).catch(() => {});
+    }
+    return r.rows.length === 0;
+  } catch (e) {
+    console.warn("[meta] anti-doublon en mémoire seulement (table meta_inbound absente ?) :", (e as Error).message);
+    return dejaVuLocal(wamid);
+  }
+}
+
 export async function handleIncoming(msg: IncomingMessage): Promise<void> {
   const phone = meta.normalizePhone(msg.from);
   if (!phone) return;
+
+  if (await dejaTraite(msg.messageId)) {
+    console.log("[meta] message déjà traité, ignoré :", msg.messageId);
+    return;
+  }
 
   const agent = await trouverAgent(msg.phoneNumberId);
   if (!agent) {
