@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/auth-server";
 import { query } from "@/lib/db";
 import { pousserUn } from "@/lib/whatsapp/catalogue-sync";
+import type { AxeVariante } from "@/lib/whatsapp/variantes";
 import { coerce } from "@/lib/productFields";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
@@ -108,6 +109,7 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
     stock: cree.stock != null ? Number(cree.stock) : null,
     category: cree.category as string | null,
     active: cree.active as boolean | null,
+    variants: Array.isArray(cree.variants) ? (cree.variants as AxeVariante[]) : null,
   }, { marque: (owner as { business_name?: string })?.business_name }).catch(() => {});
 
   return NextResponse.json({ product: cree }, { status: 201 });

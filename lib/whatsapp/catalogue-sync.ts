@@ -32,7 +32,7 @@ import { query } from "@/lib/db";
 import * as meta from "./meta";
 import { lirePrix } from "./prix";
 import { decider } from "./appariement";
-import { grouperVariantes, produitParent, type AxeVariante } from "./variantes";
+import { grouperVariantes, idsAttendus, produitParent, type AxeVariante } from "./variantes";
 
 export type Rapport = {
   ok: boolean;
@@ -145,6 +145,26 @@ export async function reconcilier(
     } else {
       rapport.pousses = r.envoyes;
       rapport.avertissements.push(...(r.avertissements || []));
+
+      // Le ménage : des articles Meta qui ne correspondent plus à rien. Un
+      // produit passé en variations laisse derrière lui son article « parent » ;
+      // une option retirée laisse son article de variation. Laissés en place,
+      // ils restent en vente dans WhatsApp, en double ou sans stock.
+      const attendus = new Map(envoyables.map((p) => [
+        p.id,
+        new Set(idsAttendus({ id: p.id, name: p.name, image_url: p.image_url }, p.variants)),
+      ]));
+      const perimes = chezMeta.items
+        .map((it) => it.retailer_id)
+        .filter((rid) => {
+          const ok = attendus.get(produitParent(rid));
+          return ok !== undefined && !ok.has(rid);
+        });
+      if (perimes.length) {
+        const d = await meta.supprimerDuCatalogue(perimes);
+        if (d.ok) rapport.avertissements.push(`${perimes.length} article(s) périmé(s) retiré(s) de Meta : ${perimes.join(", ")}`);
+        else rapport.avertissements.push(`Articles périmés non retirés de Meta : ${d.error}`);
+      }
       if (liaison) {
         await query(
           `UPDATE camille.products SET meta_retailer_id = id::text, updated_at = NOW()
@@ -260,7 +280,7 @@ export async function pousserUn(
   agentId: string,
   p: { id: string; name: string; description?: string | null; price?: number | null;
        currency?: string | null; image_url?: string | null; stock?: number | null;
-       category?: string | null; active?: boolean | null },
+       category?: string | null; active?: boolean | null; variants?: AxeVariante[] | null },
   options: { lien?: string; marque?: string } = {}
 ): Promise<void> {
   if (!meta.metaConfigured().ok) return;
@@ -272,6 +292,9 @@ export async function pousserUn(
       price: Number(p.price), currency: p.currency || "XAF",
       image_url: p.image_url, stock: p.stock ?? null,
       category: p.category ?? null, active: true,
+      // Sans les axes, un produit décliné partait comme UN seul article :
+      // le client ne voyait aucune variation dans WhatsApp.
+      variants: Array.isArray(p.variants) ? p.variants : null,
     }],
     options
   );
@@ -279,6 +302,10 @@ export async function pousserUn(
     console.error(`[catalogue] ${p.name} non poussé chez Meta : ${r.error}`);
     return;
   }
+  // Produit éclaté en variations : l'ancien article « parent » ne doit pas
+  // rester en vente à côté d'elles. Best-effort : il peut ne pas exister.
+  const ids = idsAttendus({ id: p.id, name: p.name, image_url: p.image_url }, p.variants);
+  if (!ids.includes(p.id)) await meta.supprimerDuCatalogue([p.id]).catch(() => {});
   await query(
     `UPDATE camille.products SET meta_retailer_id = id::text, updated_at = NOW()
       WHERE id = $1 AND agent_id = $2`,
@@ -298,8 +325,9 @@ export async function pousserUn(
  * le pire des deux mondes — on a encaissé l'attente du client sans la
  * marchandise.
  */
-export async function retirerUn(retailerId: string | null | undefined): Promise<void> {
-  if (!retailerId || !meta.metaConfigured().ok) return;
-  const r = await meta.supprimerDuCatalogue([retailerId]);
-  if (!r.ok) console.error(`[catalogue] ${retailerId} non retiré de Meta : ${r.error}`);
+export async function retirerUn(retailerIds: string | string[] | null | undefined): Promise<void> {
+  const ids = (Array.isArray(retailerIds) ? retailerIds : [retailerIds]).filter(Boolean) as string[];
+  if (!ids.length || !meta.metaConfigured().ok) return;
+  const r = await meta.supprimerDuCatalogue(ids);
+  if (!r.ok) console.error(`[catalogue] ${ids.join(", ")} non retiré(s) de Meta : ${r.error}`);
 }

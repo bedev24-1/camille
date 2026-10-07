@@ -581,6 +581,20 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
     ])[0].axes, [{ name: "Taille", options: ["S", "M"] }]);
 
   eq("un item sans retailer_id est ignoré", grouperVariantes([{ retailer_id: "" }]).length, 0);
+
+  // ── Envoi, commande et ménage ─────────────────────────────────────────────
+  const { retailerAffiche, idsAttendus, libelleVariante } = await import(`${DIST}/whatsapp/variantes.js`);
+  groupe("variantes — envoi, commande, ménage");
+  const UN = [{ name: "Couleur", options: ["Noir", { value: "Bleu ciel", image: "http://i/b.jpg" }] }];
+  const DEUX = [{ name: "Couleur", options: ["Noir", "Bleu"] }, { name: "Taille", options: ["S", "M"] }];
+  // Le parent n'existe plus chez Meta dès qu'il est éclaté : on montre une variation.
+  chk("sans variation → on montre le parent", retailerAffiche(P, null) === "abc");
+  chk("un axe → on montre la 1re variation", retailerAffiche(P, UN) === "abc:noir");
+  chk("deux axes → parent seul, aucune combinaison", retailerAffiche(P, DEUX) === "abc");
+  eq("ids attendus chez Meta (ménage)", idsAttendus(P, UN), ["abc:noir", "abc:bleu-ciel"]);
+  chk("la commande garde la variation choisie", libelleVariante("abc:bleu-ciel", UN) === "Bleu ciel");
+  chk("pas de libellé pour un parent", libelleVariante("abc", UN) === null);
+  chk("option inconnue → pas de libellé inventé", libelleVariante("abc:rouge", UN) === null);
 }
 
 // ═══ lib/orders — les heures d'ouverture en texte libre ═════════════════════
