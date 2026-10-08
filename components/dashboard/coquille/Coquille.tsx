@@ -31,7 +31,7 @@ export const libelleStatut = (s?: string) => (s === "active" ? "En ligne" : s ==
 function PuceStatut({ statut }: { statut?: string }) {
   const actif = statut === "active";
   return (
-    <span className="rounded-full px-2.5 py-0.5 text-[13px]"
+    <span className="rounded-full px-2 py-0.5 text-[12px] sm:px-2.5 sm:text-[13px]"
       style={{ background: actif ? "#D9F5DF" : "#FDEFD3", color: actif ? "#1E7A3A" : "#9A6510" }}>
       {libelleStatut(statut)}
     </span>
@@ -68,14 +68,14 @@ function Feuille({ children }: { children: React.ReactNode }) {
         {page?.parAgent && agent && (
           <div className="flex flex-wrap items-center gap-2">
             <Link href={`/dashboard/${agent.id}/whatsapp`} aria-label="WhatsApp officiel"
-              className="coq-puce-claire flex h-11 w-11 items-center justify-center rounded-full" style={{ color: "#1DAB55" }}>
+              className="coq-puce-claire flex h-9 w-9 items-center sm:h-11 sm:w-11 justify-center rounded-full" style={{ color: "#1DAB55" }}>
               <IconeWhatsapp className="h-5 w-5" />
             </Link>
-            <span className="coq-puce-claire rounded-full px-4 py-2.5 text-[14px]">
+            <span className="coq-puce-claire rounded-full px-3 py-2 text-[13px] sm:px-4 sm:py-2.5 sm:text-[14px]">
               <span style={{ color: "var(--cl-ink-faint)" }}>Agent : </span>
               <span style={{ color: "var(--cl-ink)" }}>{agent.identity.name}</span>
             </span>
-            <span className="coq-puce-claire rounded-full px-4 py-2.5 text-[14px]">
+            <span className="coq-puce-claire rounded-full px-3 py-2 text-[13px] sm:px-4 sm:py-2.5 sm:text-[14px]">
               <span style={{ color: "var(--cl-ink-faint)" }}>Statut : </span>
               <PuceStatut statut={agent.status} />
             </span>
@@ -194,7 +194,45 @@ export function Coquille({ children }: { children: React.ReactNode }) {
         @media (min-width: 640px) { .coq { --coq-marge: 32px; } }
         @media (min-width: 768px) { .coq { --coq-entete: 76px; } }
         @media (min-width: 1024px) { .coq { --coq-marge: 40px; } }
-        .coq-menu { background: rgba(255,255,255,0.22); border: 1px solid rgba(255,255,255,0.4); backdrop-filter: blur(10px); }
+        .coq-menu { background: rgba(255,255,255,0.22); border: 1px solid rgba(255,255,255,0.4); backdrop-filter: blur(10px); transition: padding .45s cubic-bezier(.22,1,.36,1); }
+
+        /* ── L'en-tête : fixe en haut, se replie en barre flottante au défilement ── */
+        .coq-entete { height: var(--coq-entete); pointer-events: none; }
+        .coq-barre {
+          pointer-events: auto; padding: 0 20px; border-radius: 0; background: transparent;
+          transition: margin .45s cubic-bezier(.22,1,.36,1), padding .45s cubic-bezier(.22,1,.36,1),
+                      border-radius .45s cubic-bezier(.22,1,.36,1), background-color .35s ease, box-shadow .35s ease;
+        }
+        @media (min-width: 1024px) { .coq-barre { padding: 0 40px; } }
+        .coq-rang { height: 76px; transition: height .45s cubic-bezier(.22,1,.36,1); }
+        .coq-rang-mobile { padding-bottom: 8px; transition: padding .45s cubic-bezier(.22,1,.36,1); }
+        .coq-p-menu, .coq-p-rond, .coq-logo-signe, .coq-nouvel, .coq-nouvel-plus {
+          transition: width .45s cubic-bezier(.22,1,.36,1), height .45s cubic-bezier(.22,1,.36,1), padding .45s cubic-bezier(.22,1,.36,1),
+                      font-size .45s cubic-bezier(.22,1,.36,1), background-color .25s ease, color .25s ease, box-shadow .25s ease, transform .2s cubic-bezier(.34,1.56,.64,1);
+        }
+        .coq-p-menu { width: 40px; height: 40px; }
+        .coq-p-rond { width: 44px; height: 44px; }
+        .coq-logo-signe { width: 36px; height: 36px; }
+        .coq-logo-sous { max-height: 14px; overflow: hidden; transition: max-height .4s ease, opacity .3s ease, margin .4s ease; }
+        .coq-nouvel { padding: 8px 16px 8px 10px; font-size: 14px; }
+        .coq-nouvel-plus { width: 28px; height: 28px; }
+
+        .coq-entete[data-compacte] .coq-barre {
+          margin: 8px 12px 0; padding: 0 10px 0 16px; border-radius: 28px;
+          background: rgba(146,120,240,0.80); backdrop-filter: blur(16px) saturate(1.3); -webkit-backdrop-filter: blur(16px) saturate(1.3);
+          box-shadow: 0 14px 34px rgba(60,30,170,0.24), inset 0 0 0 1px rgba(255,255,255,0.28);
+        }
+        @media (min-width: 768px) { .coq-entete[data-compacte] .coq-barre { border-radius: 999px; margin: 10px 24px 0; } }
+        .coq-entete[data-compacte] .coq-rang { height: 54px; }
+        .coq-entete[data-compacte] .coq-rang-mobile { padding-bottom: 8px; }
+        .coq-entete[data-compacte] .coq-menu { padding: 3px; }
+        .coq-entete[data-compacte] .coq-p-menu { width: 32px; height: 32px; }
+        .coq-entete[data-compacte] .coq-p-rond { width: 36px; height: 36px; }
+        .coq-entete[data-compacte] .coq-logo-signe { width: 28px; height: 28px; }
+        .coq-entete[data-compacte] .coq-logo-sous { max-height: 0; opacity: 0; margin-top: 0; }
+        .coq-entete[data-compacte] .coq-nouvel { padding: 4px 12px 4px 5px; font-size: 13px; }
+        .coq-entete[data-compacte] .coq-nouvel-plus { width: 24px; height: 24px; }
+        @media (prefers-reduced-motion: reduce) { .coq-barre, .coq-rang, .coq-p-menu, .coq-p-rond, .coq-logo-signe { transition: none !important; } }
         .coq-pastille { transition: background-color .25s ease, color .25s ease, box-shadow .25s ease, transform .2s cubic-bezier(.34,1.56,.64,1); }
         .coq-pastille:hover { transform: scale(1.06); }
         .coq-pastille:active { transform: scale(0.95); }
@@ -207,15 +245,18 @@ export function Coquille({ children }: { children: React.ReactNode }) {
           background: var(--bg-base, #fff);
           box-shadow: 0 -12px 40px rgba(70,40,190,0.10);
           padding-bottom: 96px;
+          /* Une page trop large ne fait jamais défiler l'écran de côté
+             (« clip » garde le collant des titres, contrairement à hidden). */
+          overflow-x: clip;
         }
         .coq-h1 { font-size: clamp(30px, 4.6vh, 46px); line-height: 1.08; margin-top: 2px; }
         .coq-puce-claire { background: #F4F2F7; color: var(--cl-ink); transition: transform .2s cubic-bezier(.34,1.56,.64,1); }
         a.coq-puce-claire:hover { transform: scale(1.06); }
         /* Le titre de la page est dans la feuille : celui des pages fait doublon. */
         .coq-contenu h1 { display: none; }
-        /* Les pages gardent leur largeur, mais s'alignent sur le titre au lieu
-           de se centrer : une seule marge gauche pour toute la feuille. */
-        .coq-contenu > * { margin-left: 0 !important; padding-left: var(--coq-marge) !important; padding-right: var(--coq-marge) !important; }
+        /* Les pages prennent toute la largeur de la feuille et s'alignent sur
+           le titre : une seule marge pour toute la feuille. */
+        .coq-contenu > * { margin-left: 0 !important; max-width: none !important; padding-left: var(--coq-marge) !important; padding-right: var(--coq-marge) !important; }
         .coq-fab { background: var(--cl-ink); box-shadow: 0 14px 34px rgba(25,23,27,0.28), 0 0 0 4px rgba(255,255,255,0.5); }
       `}</style>
     </FournisseurAgent>
