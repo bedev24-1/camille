@@ -16,7 +16,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import {
   ArrowRight, ArrowUpRight, Check, ShoppingBag, UtensilsCrossed, Shirt, Sparkles,
   Smartphone, Coffee, Gem, Cake, Store, Truck, Mic, UserCheck, BellRing, Users,
@@ -123,13 +123,31 @@ function NotifCommande() {
   );
 }
 
+/** La vidéo de fond du hero : muette, en boucle, jamais au premier plan. */
+function VideoFond() {
+  const calme = useReducedMotion();
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+      {calme ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src="/landing/fond-humains.jpg" alt="" className="cl-video-fond h-full w-full object-cover" />
+      ) : (
+        <video className="cl-video-fond h-full w-full object-cover" src="/landing/fond-humains.mp4" poster="/landing/fond-humains.jpg"
+          autoPlay muted loop playsInline preload="metadata" />
+      )}
+    </div>
+  );
+}
+
 function Hero() {
   const typed = useTypewriter(TYPED_WORDS);
 
   return (
     <section className="relative overflow-hidden">
-      {/* Le ciel lavande du tableau de bord, qui se fond dans le blanc */}
-      <div className="cl-ciel pointer-events-none absolute inset-0" aria-hidden="true" />
+      {/* En fond, des gens — un décor, pas un sujet : la vidéo se devine sous
+          le ciel lavande, puis la grille par-dessus. */}
+      <VideoFond />
+      <div className="cl-ciel cl-ciel-voile pointer-events-none absolute inset-0" aria-hidden="true" />
       <div className="cl-grid-bg pointer-events-none absolute inset-0" aria-hidden="true" />
 
       <div className="cl-container relative grid items-center gap-14 pb-20 pt-10 md:pb-24 md:pt-16 lg:grid-cols-[1.08fr_0.92fr]">

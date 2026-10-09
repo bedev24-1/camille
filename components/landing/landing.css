@@ -168,6 +168,14 @@
     linear-gradient(180deg, #C9BCFA 0%, #E4DCFD 45%, #FFFFFF 100%);
 }
 .cl-ciel-bas { transform: scaleY(-1); opacity: 0.75; }
+/* Sur la vidéo du hero : le même ciel, translucide, pour que les gens se
+   devinent derrière sans gêner la lecture. */
+.cl-ciel-voile {
+  background:
+    radial-gradient(60% 50% at 25% 40%, rgba(255,255,255,0.48) 0%, rgba(255,255,255,0) 70%),
+    linear-gradient(180deg, rgba(196,182,250,0.70) 0%, rgba(222,213,253,0.76) 55%, #FFFFFF 100%);
+}
+.cl-video-fond { filter: saturate(0.7); opacity: 1; }
 
 /* ── Le papier peint de WhatsApp (téléphone du hero) ────────────────────────── */
 .cl-wa-fond {
