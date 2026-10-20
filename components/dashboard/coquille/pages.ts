@@ -29,6 +29,7 @@ export type Page = {
 export const PAGES: Page[] = [
   { famille: "ventes", titre: "Conversations", segment: "conversations", parAgent: true, action: "ventes" },
   { famille: "ventes", titre: "Commandes", chemin: "/dashboard/orders", parAgent: true, action: "ventes" },
+  { famille: "ventes", titre: "Caisse", segment: "caisse", parAgent: true, action: "ventes" },
   { famille: "ventes", titre: "Suivi des livraisons", segment: "suivi", parAgent: true, action: "ventes" },
   { famille: "ventes", titre: "Réclamations", chemin: "/dashboard/complaints", parAgent: false, action: "ventes" },
   { famille: "ventes", titre: "Modèles de message", chemin: "/dashboard/templates", parAgent: false, action: "reglages" },
@@ -41,6 +42,7 @@ export const PAGES: Page[] = [
   { famille: "catalogue", titre: "Catalogue WhatsApp", segment: "catalog-sync", parAgent: true, action: "catalogue" },
   { famille: "catalogue", titre: "WhatsApp officiel", segment: "whatsapp", parAgent: true, action: "reglages" },
   { famille: "catalogue", titre: "Médias", segment: "medias", parAgent: true, action: "catalogue" },
+  { famille: "catalogue", titre: "Mon site", segment: "site", parAgent: true, action: "reglages" },
   { famille: "reglages", titre: "Votre agent", segment: "", parAgent: true, action: "reglages" },
   { famille: "reglages", titre: "Configuration de l'agent", segment: "settings", parAgent: true, action: "reglages" },
   { famille: "reglages", titre: "Intégrations", segment: "integrations", parAgent: true, action: "reglages" },

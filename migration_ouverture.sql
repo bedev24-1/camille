@@ -31,4 +31,37 @@ CREATE TABLE IF NOT EXISTS camille.meta_retraits (
   PRIMARY KEY (agent_id, retailer_id)
 );
 
+-- Ce que les clients ont demandé sans le trouver : le commerçant sait quoi
+-- ajouter à son catalogue (« 14 clients ont demandé des sandales »).
+CREATE TABLE IF NOT EXISTS camille.demandes_manquees (
+  id         BIGSERIAL PRIMARY KEY,
+  agent_id   UUID NOT NULL REFERENCES camille.agents(id) ON DELETE CASCADE,
+  phone      TEXT,
+  texte      TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_demandes_manquees_agent ON camille.demandes_manquees (agent_id, created_at DESC);
+
+-- Le bilan du matin : un par agent et par jour, pas plus.
+CREATE TABLE IF NOT EXISTS camille.bilans_envoyes (
+  agent_id UUID NOT NULL REFERENCES camille.agents(id) ON DELETE CASCADE,
+  jour     DATE NOT NULL,
+  PRIMARY KEY (agent_id, jour)
+);
+
+-- L'option « Site » : la demande du commerçant et le brief préparé pour DIP.
+CREATE TABLE IF NOT EXISTS camille.site_demandes (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  agent_id   UUID NOT NULL REFERENCES camille.agents(id) ON DELETE CASCADE,
+  user_id    UUID REFERENCES camille.users(id) ON DELETE SET NULL,
+  statut     TEXT NOT NULL DEFAULT 'demande',   -- demande | en_cours | en_ligne | annule
+  domaine    TEXT,
+  envies     TEXT,
+  brief      TEXT NOT NULL,
+  url        TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_site_demandes_agent ON camille.site_demandes (agent_id, created_at DESC);
+
 COMMIT;
