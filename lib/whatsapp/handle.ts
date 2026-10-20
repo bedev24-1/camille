@@ -15,11 +15,12 @@
 // le webhook Meta, et seul le numéro de test y est abonné.
 // ─────────────────────────────────────────────────────────────────────────────
 import { query } from "@/lib/db";
+import { notifyUser } from "@/lib/fcm";
 import { sectorProfile, sertDesRepas } from "@/lib/sectorProfiles";
 import * as meta from "./meta";
 import { avecAgent } from "./identifiants";
 import { etatQuota } from "@/lib/quota";
-import { repondreBoutique } from "./boutique";
+import { repondreBoutique, prevenirCommercant } from "./boutique";
 import { transcrire, VOCAL_MAX_OCTETS } from "./voix";
 
 export type IncomingMessage = {
@@ -290,10 +291,27 @@ export async function handleIncoming(msg: IncomingMessage): Promise<void> {
 
 /** Clients déjà prévenus que l'agent est indisponible (agent:téléphone → instant). */
 const PREVENUS = new Map<string, number>();
+/** Dernière alerte « un client vous a écrit » pendant une reprise en main (agent:téléphone → instant). */
+const ALERTES_REPRISE = new Map<string, number>();
 
 async function traiterPourAgent(msg: IncomingMessage, agent: Agent, phone: string): Promise<void> {
   if (await humainEnCours(agent.id, phone)) {
+    // Camille se tait, mais le message est GARDÉ (boîte de réception) et le
+    // commerçant est prévenu : c'est lui qui doit répondre. Sans ça, les
+    // messages arrivés pendant la reprise en main disparaissaient.
     console.log("[meta] humain en cours pour", phone, "— l'agent se tait");
+    const quoi = msg.type === "audio" ? "🎤 (message vocal)" : msg.text || `(${msg.rawType || msg.type})`;
+    await tracer(agent.id, phone, "user", quoi);
+    const cle = `${agent.id}:${phone}`;
+    if (agent.user_id && Date.now() - (ALERTES_REPRISE.get(cle) || 0) > 10 * 60_000) {
+      ALERTES_REPRISE.set(cle, Date.now());
+      notifyUser(agent.user_id, "alerte", {
+        title: `Message de ${msg.contactName || "+" + phone}`.slice(0, 90),
+        body: `${quoi} — Camille vous laisse répondre.`.slice(0, 160),
+        data: { type: "message", agentId: agent.id, phone },
+        channel: "alertes",
+      }).catch(() => {});
+    }
     return;
   }
 
@@ -353,13 +371,21 @@ async function traiterPourAgent(msg: IncomingMessage, agent: Agent, phone: strin
 
       case "services":
       case "media":
-        // Pas encore porté. On le dit plutôt que de laisser le client sans
-        // réponse — un silence est le seul échec impardonnable.
+        // Pas encore de parcours automatique (rendez-vous…). On le dit au
+        // client, et SURTOUT on prévient le commerçant : promettre « un
+        // conseiller vous répond » sans prévenir personne laissait le client
+        // attendre pour rien.
+        await prevenirCommercant(ctx, {
+          titre: `Nouveau message — ${msg.contactName || "+" + phone}`,
+          corps: msg.text || "Un client vous a écrit sur WhatsApp.",
+          contenu: { kind: "service_request", message: msg.text || "", contact: phone, name: msg.contactName || "" },
+        });
         await meta.sendText(
           phone,
           `Bonjour 👋 Je suis l'assistant de ${agent.business_name || "la maison"}. ` +
-            `Dites-moi ce dont vous avez besoin, un conseiller vous répond très vite.`
+            `J'ai transmis votre message, un conseiller vous répond très vite ici même.`
         );
+        await tracer(agent.id, phone, "assistant", "[services] transmis au commerçant");
         break;
     }
   } catch (e) {

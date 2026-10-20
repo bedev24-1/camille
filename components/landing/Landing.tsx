@@ -16,7 +16,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import {
   ArrowRight, ArrowUpRight, Check, ShoppingBag, UtensilsCrossed, Shirt, Sparkles,
   Smartphone, Coffee, Gem, Cake, Store, Truck, Mic, UserCheck, BellRing, Users,
@@ -46,7 +46,9 @@ const STATUT_META = (() => {
   const partenaire = false;
   return partenaire
     ? { badge: "Partenaire Meta · API officielle", bande: "Partenaire Meta", sous: "Camille est partenaire Meta et passe par l'API officielle WhatsApp Business." }
-    : { badge: "API officielle WhatsApp Business", bande: "Construite sur la plateforme officielle de Meta", sous: "Pas une application détournée : l'API WhatsApp Business de Meta, celle des grandes marques." };
+    // L'application a passé l'examen de Meta (app review) en octobre 2026 :
+    // c'est vrai et vérifiable. Ce n'est pas encore le statut de partenaire.
+    : { badge: "Application validée par Meta", bande: "Application validée par Meta", sous: "Camille a passé l'examen de Meta et utilise l'API officielle WhatsApp Business, celle des grandes marques. Pas une application détournée." };
 })();
 const RESSORT = { type: "spring", stiffness: 320, damping: 30 } as const;
 
@@ -123,13 +125,31 @@ function NotifCommande() {
   );
 }
 
+/** La vidéo de fond du hero : muette, en boucle, jamais au premier plan. */
+function VideoFond() {
+  const calme = useReducedMotion();
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+      {calme ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src="/landing/fond-humains.jpg" alt="" className="cl-video-fond h-full w-full object-cover" />
+      ) : (
+        <video className="cl-video-fond h-full w-full object-cover" src="/landing/fond-humains.mp4" poster="/landing/fond-humains.jpg"
+          autoPlay muted loop playsInline preload="metadata" />
+      )}
+    </div>
+  );
+}
+
 function Hero() {
   const typed = useTypewriter(TYPED_WORDS);
 
   return (
     <section className="relative overflow-hidden">
-      {/* Le ciel lavande du tableau de bord, qui se fond dans le blanc */}
-      <div className="cl-ciel pointer-events-none absolute inset-0" aria-hidden="true" />
+      {/* En fond, des gens — un décor, pas un sujet : la vidéo se devine sous
+          le ciel lavande, puis la grille par-dessus. */}
+      <VideoFond />
+      <div className="cl-ciel cl-ciel-voile pointer-events-none absolute inset-0" aria-hidden="true" />
       <div className="cl-grid-bg pointer-events-none absolute inset-0" aria-hidden="true" />
 
       <div className="cl-container relative grid items-center gap-14 pb-20 pt-10 md:pb-24 md:pt-16 lg:grid-cols-[1.08fr_0.92fr]">

@@ -99,7 +99,7 @@ export type PushPayload = {
  * Ne lève jamais : le push est un bonus, jamais un point de rupture.
  */
 /** Ce qui touche aux ventes d'un agent part aussi à son équipe (gérants, vendeurs). */
-const POUR_L_EQUIPE = new Set(["order", "stock", "rupture", "complaint"]);
+const POUR_L_EQUIPE = new Set(["order", "stock", "rupture", "complaint", "message"]);
 
 export async function notifyUser(
   userId: string,
@@ -134,6 +134,10 @@ async function notifierUn(
   } catch {
     // table absente : on continue, l'envoi push reste possible
   }
+
+  // Commande de nuit : enregistrée dans la cloche ci-dessus, mais sans
+  // notification sonore sur les appareils.
+  if (p.data?.nuit === "1") return { sent: 0, skipped: "commande de nuit : pas de son" };
 
   let tous: string[] = [];
   try {
