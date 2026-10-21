@@ -704,6 +704,12 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   chk("à cheval est un chevauchement", chevauche({ debut: h(9), fin: h(10, 15) }, { debut: h(10), fin: h(11) }));
   const dimanche = creneauxLibres({ horaires: "Lun-Sam 9h-12h", occupes: [], duree: 30, maintenant: new Date(Date.UTC(2026, 9, 4, 7)), n: 3, delai: 60 });
   chk("dimanche fermé : premier créneau lundi", dimanche.length && new Date(dimanche[0].getTime() + 3600_000).getUTCDay() === 1);
+
+  const { heureDuRappel } = await import(`${DIST}/creneaux.js`);
+  const quand = (d) => `${new Date(d.getTime() + 3600_000).getUTCDate()}/${loc(d)}`;
+  eq("RDV 15h : rappel à 12h", quand(heureDuRappel(h(15))), "5/12h00");
+  eq("RDV 10h30 : 3 h avant, soit 7h30", quand(heureDuRappel(h(10, 30))), "5/7h30");
+  eq("RDV 9h : rappel la veille à 19h", quand(heureDuRappel(h(9))), "4/19h00");
 }
 
 // ═══ agent santé — ce que le code tient, quoi que dise le modèle ═══════════
@@ -1098,6 +1104,26 @@ const DIST = pathToFileURL(resolve(process.cwd(), process.argv[2] || ".test-buil
   const gs = lireCatalogue("Product,Price,Stock\nCap,\"3,000\",2\n");
   eq("Google Sheets « , »", [gs.lignes[0].name, gs.lignes[0].price], ["Cap", 3000]);
   eq("pas de colonne nom → expliqué", lireCatalogue("a;b\n1;2").ecartees.length, 1);
+}
+
+// ═══ vitrine en ligne — adresse, options, numéro ═══════════════════════════
+{
+  groupe("vitrine — adresse, prix des options, numéro du client");
+  const { slugDe, slugValide, prixAvecOptions, numeroClient } = await import(`${DIST}/vitrine-regles.js`);
+  eq("adresse tirée du nom", slugDe("Yoos Food — Bonamoussadi !"), "yoos-food-bonamoussadi");
+  eq("accents retirés", slugDe("Pâtisserie Élégance"), "patisserie-elegance");
+  chk("adresse valide", slugValide("yoos-food"));
+  chk("pas de tiret au bout", !slugValide("yoos-"));
+  const g = [
+    { name: "Accompagnement", required: true, choices: [{ label: "Frites", price: 0 }, { label: "Plantain", price: 500 }] },
+    { name: "Piment", required: false, choices: [{ label: "Piment fort", price: 0 }] },
+  ];
+  eq("supplément ajouté au prix", prixAvecOptions(2500, g, [1, -1]), { ok: true, prix: 3000, libelle: "Plantain, Sans piment" });
+  eq("groupe obligatoire manquant", prixAvecOptions(2500, g, [-1, 0]), { ok: false, groupe: "Accompagnement" });
+  eq("sans options", prixAvecOptions(1000, [], undefined), { ok: true, prix: 1000, libelle: "" });
+  eq("numéro local", numeroClient("6 77 45 12 08"), "237677451208");
+  eq("numéro avec +237", numeroClient("+237 699 12 34 56"), "237699123456");
+  eq("numéro invalide", numeroClient("12345"), null);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
